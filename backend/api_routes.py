@@ -35,6 +35,13 @@ _PAIRING_WORDS = ("amber", "birch", "cobalt", "delta", "ember", "fern", "granite
                   "yellow", "zephyr")
 
 
+def _safe_display_text(value, limit, fallback):
+    text = str(value or fallback)
+    text = "".join("\uFFFD" if 0xD800 <= ord(char) <= 0xDFFF else char for char in text)
+    text = "".join(char for char in text if char in "\t " or ord(char) >= 0x20)
+    return text.strip()[:limit] or fallback
+
+
 def _public_transfers(limit=50):
     with STATE["lock"]:
         items = list(STATE["transfers"])
@@ -269,19 +276,23 @@ async def confirm_pairing_handler(request: web.Request) -> web.Response:
 def _touch_device(device_id, name, device_type, remote):
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         return
+    name = _safe_display_text(name, 80, "Unknown device")
+    device_type = _safe_display_text(device_type, 40, "Device")
+    remote = _safe_display_text(remote, 80, "") if remote else ""
     now = int(time.time())
     persist = False
     with STATE["lock"]:
         old = STATE["devices"].get(device_id, {})
-        persist = (not old or old.get("name") != old.get("display_name", (name or "Unknown device")[:80])
-                   or old.get("type") != (device_type or "Device")[:40]
+        display_name = _safe_display_text(old.get("display_name", "") or name, 80, "Unknown device")
+        persist = (not old or old.get("name") != display_name
+                   or old.get("type") != device_type
                    or old.get("ip") != (remote or old.get("ip", ""))
                    or time.monotonic() - _device_persisted_at.get(device_id, 0) >= 60)
         STATE["devices"][device_id] = {
             "id": device_id,
-            "name": old.get("display_name", (name or "Unknown device")[:80]),
-            "display_name": old.get("display_name", ""),
-            "type": (device_type or "Device")[:40],
+            "name": display_name,
+            "display_name": _safe_display_text(old.get("display_name", ""), 80, ""),
+            "type": device_type,
             "ip": remote or old.get("ip", ""),
             "first_seen": old.get("first_seen", int(time.time())),
             "last_seen": now,
@@ -372,7 +383,7 @@ async def devices_handler(request: web.Request) -> web.Response:
 async def rename_device_handler(request: web.Request) -> web.Response:
     body = await request.json()
     device_id = body.get("id", "")
-    name = str(body.get("name", "")).strip()[:80]
+    name = _safe_display_text(body.get("name", ""), 80, "")
     local_request = _is_local_host_request(request)
     requester_id = request.headers.get("X-SuperShare-Device", "").strip()
     with STATE["lock"]:

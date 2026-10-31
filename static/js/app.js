@@ -10,7 +10,21 @@ if (!localDeviceId) {
 }
 const clientPlatform = navigator.userAgentData?.platform || (/Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : /Win/i.test(navigator.platform) ? "Windows" : /Mac/i.test(navigator.platform) ? "macOS" : "Browser");
 const browserName = /EdgA?\//.test(navigator.userAgent) || /EdgiOS\//.test(navigator.userAgent) ? "Edge" : /OPR\//.test(navigator.userAgent) ? "Opera" : /FxiOS\//.test(navigator.userAgent) || /Firefox\//.test(navigator.userAgent) ? "Firefox" : /CriOS\//.test(navigator.userAgent) || /Chrome\//.test(navigator.userAgent) ? "Chrome" : /Safari\//.test(navigator.userAgent) ? "Safari" : "Web browser";
-let localDeviceName = localStorage.getItem("supershare-device-name") || `${clientPlatform} · ${browserName}`;
+function wellFormedText(value) {
+  const text = String(value ?? "");
+  let result = "";
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) result += text[index] + text[++index];
+      else result += "\uFFFD";
+    } else if (code >= 0xDC00 && code <= 0xDFFF) result += "\uFFFD";
+    else result += text[index];
+  }
+  return result;
+}
+let localDeviceName = wellFormedText(localStorage.getItem("supershare-device-name")) || `${clientPlatform} · ${browserName}`;
 document.getElementById("sourceDeviceName").textContent = localDeviceName;
 document.getElementById("sourceProfileId").textContent = `Profile ID · ${localDeviceId.slice(0, 8)}`;
 const localDeviceType = `${clientPlatform} browser · ${browserName}`;
@@ -350,10 +364,10 @@ document.getElementById("confirmPairingBtn").addEventListener("click", confirmPa
 document.getElementById("nameBrowserBtn").addEventListener("click", async () => {
   const name = await editText("Name this browser profile", "This label helps the laptop identify this browser profile. It does not prove physical device identity.", "Display name", localDeviceName);
   if (!name) return;
-  localDeviceName = name;
-  localStorage.setItem("supershare-device-name", name);
-  document.getElementById("sourceDeviceName").textContent = name;
-  if (window._profilePaired) await deviceAction("/api/devices/rename", { id: localDeviceId, name });
+  localDeviceName = wellFormedText(name);
+  localStorage.setItem("supershare-device-name", localDeviceName);
+  document.getElementById("sourceDeviceName").textContent = localDeviceName;
+  if (window._profilePaired) await deviceAction("/api/devices/rename", { id: localDeviceId, name: localDeviceName });
   else showNotice("Profile name saved in this browser. It will be shared with the host when you pair.", "success");
   refreshDevices();
 });

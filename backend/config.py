@@ -64,6 +64,12 @@ def _connect_database():
     return connection
 
 
+def _state_json(value):
+    # Escaping non-ASCII keeps lone UTF-16 surrogates in legacy/browser text
+    # representable as valid ASCII JSON instead of failing SQLite's UTF-8 bind.
+    return json.dumps(value, ensure_ascii=True)
+
+
 def _remove_managed_partial(job):
     part_path = job.get("part_path", "")
     share_root = job.get("share_root") or STATE.get("share_dir", "")
@@ -136,7 +142,7 @@ def save_persistent_state():
         with _connect_database() as connection:
             connection.executemany(
                 "INSERT INTO devices(id, data) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-                [(device_id, json.dumps(data, ensure_ascii=False)) for device_id, data in devices],
+                [(device_id, _state_json(data)) for device_id, data in devices],
             )
             ids = [device_id for device_id, _ in devices]
             if ids:
@@ -146,13 +152,13 @@ def save_persistent_state():
                 connection.execute("DELETE FROM devices")
             connection.executemany(
                 "INSERT INTO transfers(id, timestamp, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp=excluded.timestamp, data=excluded.data",
-                [(entry["id"], entry["timestamp"], json.dumps(entry, ensure_ascii=False)) for entry in transfers],
+                [(entry["id"], entry["timestamp"], _state_json(entry)) for entry in transfers],
             )
             connection.execute("DELETE FROM transfers WHERE id NOT IN (SELECT id FROM transfers ORDER BY timestamp DESC LIMIT 200)")
             jobs = list(STATE.get("transfer_jobs", {}).items())
             connection.executemany(
                 "INSERT INTO transfer_jobs(id, updated_at, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
-                [(job_id, int(job.get("updated_at", time.time())), json.dumps(job, ensure_ascii=False)) for job_id, job in jobs],
+                [(job_id, int(job.get("updated_at", time.time())), _state_json(job)) for job_id, job in jobs],
             )
             if jobs:
                 placeholders = ",".join("?" for _ in jobs)
