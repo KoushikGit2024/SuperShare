@@ -23,7 +23,7 @@ os.makedirs(SHARE_DIR, exist_ok=True)
 
 HOST = "0.0.0.0"
 PORT = 80
-CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB streaming chunks for huge files
+CHUNK_SIZE = 8 * 1024 * 1024  # 4 MB streaming chunks for huge files
 MAX_CONCURRENT_TRANSFERS = 2
 TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
@@ -209,3 +209,48 @@ def record_transfer(device_id, filename, size, status="completed", detail="", de
         STATE["transfers"] = STATE["transfers"][-200:]
     save_persistent_state()
     return entry
+
+
+def clear_transfers_history():
+    with STATE["lock"]:
+        STATE["transfers"].clear()
+        with _connect_database() as connection:
+            connection.execute("DELETE FROM transfers")
+    return True
+
+
+def clear_temp_partials():
+    removed_count = 0
+    reclaimed_bytes = 0
+    with STATE["lock"]:
+        # Find active and old partial files
+        share_dir = STATE["share_dir"]
+        for root, dirs, files in os.walk(share_dir):
+            for f in files:
+                if f.startswith(".supershare-") and f.endswith(".partial"):
+                    file_path = os.path.join(root, f)
+                    try:
+                        sz = os.path.getsize(file_path)
+                        os.remove(file_path)
+                        removed_count += 1
+                        reclaimed_bytes += sz
+                    except OSError:
+                        pass
+        # Clear transfer jobs
+        STATE["transfer_jobs"].clear()
+        with _connect_database() as connection:
+            connection.execute("DELETE FROM transfer_jobs")
+    return {"removed": removed_count, "reclaimed_bytes": reclaimed_bytes}
+
+
+def reset_all_stored_state():
+    with STATE["lock"]:
+        STATE["devices"].clear()
+        STATE["transfers"].clear()
+        STATE["transfer_jobs"].clear()
+        with _connect_database() as connection:
+            connection.execute("DELETE FROM devices")
+            connection.execute("DELETE FROM transfers")
+            connection.execute("DELETE FROM transfer_jobs")
+    clear_temp_partials()
+    return True

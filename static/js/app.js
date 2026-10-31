@@ -840,31 +840,63 @@ async function uploadFiles(files, retryName = null) {
           let offset = session.offset || 0;
           const resumeOffset = offset;
           lastSampleOffset = offset;
-          const chunkSize = session.chunk_size;
-          queueEntry.progress.value = Math.min(offset, file.size || 1);
+          const chunkSize = session.chunk_size || (8 * 1024 * 1024);
+          let uploadedBytes = offset;
+          queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
           queueEntry.progress.setAttribute("aria-label", `${relative}: resumed at ${formatBytes(offset)} of ${formatBytes(file.size)}`);
           queueEntry.state.textContent = "Transferring";
-          while (offset < file.size) {
-            const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
-            const chunkChecksum = await sha256Blob(chunk);
-            const response = await fetch(`/api/transfers/${session.id}/chunk`, { method: "PUT", headers: { ...deviceHeaders(), "X-Chunk-Offset": String(offset), "X-Chunk-SHA256": chunkChecksum }, credentials: "same-origin", body: chunk });
-            if (!response.ok) throw new Error(await responseError(response));
-            const result = await response.json(); offset = result.offset;
-            queueEntry.progress.value = Math.min(offset, file.size || 1);
-            queueEntry.progress.setAttribute("aria-label", `${relative}: ${Math.round(file.size ? offset / file.size * 100 : 100)} percent, ${formatBytes(offset)} of ${formatBytes(file.size)} acknowledged`);
-            const progress = file.size ? Math.round(offset / file.size * 100) : 100;
-            bar.style.width = `${progress}%`; percent.textContent = `${progress}%`;
-            const now = Date.now();
-            const elapsedSeconds = Math.max((now - start) / 1000, 0.001);
-            const sampleSeconds = Math.max((now - lastSampleAt) / 1000, 0.001);
-            const currentRate = Math.max(offset - lastSampleOffset, 0) / sampleSeconds;
-            const averageRate = (offset - resumeOffset) / elapsedSeconds;
-            const remainingSeconds = averageRate > 0 ? Math.ceil((file.size - offset) / averageRate) : 0;
-            const etaText = remainingSeconds ? ` · ETA: ${formatDuration(remainingSeconds)}` : "";
-            speed.textContent = `${progress}% (${formatBytes(offset)} / ${formatBytes(file.size)}) · ${formatBytes(currentRate)}/s${etaText}`;
-            queueEntry.state.textContent = `${progress}% · ${formatBytes(currentRate)}/s${etaText}`;
-            lastSampleAt = now; lastSampleOffset = offset;
+
+          // Generate chunk offsets list
+          const chunkOffsets = [];
+          for (let pos = offset; pos < file.size; pos += chunkSize) {
+            chunkOffsets.push(pos);
           }
+
+          // Concurrent pipeline worker pool (3 simultaneous TCP connections)
+          const concurrency = Math.min(3, Math.max(1, chunkOffsets.length));
+          let cursor = 0;
+
+          const uploadWorker = async () => {
+            while (cursor < chunkOffsets.length) {
+              const myOffset = chunkOffsets[cursor++];
+              const chunk = file.slice(myOffset, Math.min(myOffset + chunkSize, file.size));
+              
+              const response = await fetch(`/api/transfers/${session.id}/chunk`, {
+                method: "PUT",
+                headers: { ...deviceHeaders(), "X-Chunk-Offset": String(myOffset) },
+                credentials: "same-origin",
+                body: chunk
+              });
+              
+              if (!response.ok) throw new Error(await responseError(response));
+              
+              uploadedBytes += chunk.size;
+              queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
+              const progress = file.size ? Math.round(uploadedBytes / file.size * 100) : 100;
+              bar.style.width = `${progress}%`;
+              percent.textContent = `${progress}%`;
+              
+              const now = Date.now();
+              const elapsedSeconds = Math.max((now - start) / 1000, 0.001);
+              const sampleSeconds = Math.max((now - lastSampleAt) / 1000, 0.001);
+              const currentRate = Math.max(uploadedBytes - lastSampleOffset, 0) / sampleSeconds;
+              const averageRate = (uploadedBytes - resumeOffset) / elapsedSeconds;
+              const remainingSeconds = averageRate > 0 ? Math.ceil((file.size - uploadedBytes) / averageRate) : 0;
+              const etaText = remainingSeconds ? ` · ETA: ${formatDuration(remainingSeconds)}` : "";
+              
+              speed.textContent = `${progress}% (${formatBytes(uploadedBytes)} / ${formatBytes(file.size)}) · ${formatBytes(currentRate)}/s${etaText}`;
+              queueEntry.state.textContent = `${progress}% · ${formatBytes(currentRate)}/s${etaText}`;
+              lastSampleAt = now;
+              lastSampleOffset = uploadedBytes;
+            }
+          };
+
+          // Launch concurrent workers
+          const workers = [];
+          for (let w = 0; w < concurrency; w++) {
+            workers.push(uploadWorker());
+          }
+          await Promise.all(workers);
           name.textContent = `Verifying ${file.name}`;
           queueEntry.state.textContent = "Verifying";
           speed.textContent = "Verifying chunks and final file checksum";
@@ -888,13 +920,46 @@ async function uploadFiles(files, retryName = null) {
   }
 }
 
-document.getElementById("fileInput").onchange = event => { const files = Array.from(event.target.files || []); event.target.value = ""; uploadFiles(files); };
-document.getElementById("folderInput").onchange = event => { const files = Array.from(event.target.files || []); event.target.value = ""; uploadFiles(files); };
+function sanitizeUploadFiles(rawFiles) {
+  return Array.from(rawFiles || []).filter(file => {
+    const name = file.name || "";
+    const rel = file.webkitRelativePath || "";
+    // Filter out internal partial files and OS junk files (.DS_Store, Thumbs.db)
+    if (name.startsWith(".supershare-") || name.endsWith(".partial") || name === ".DS_Store" || name === "Thumbs.db") {
+      return false;
+    }
+    if (rel.split("/").some(part => part.startsWith(".supershare-") || part.endsWith(".partial"))) {
+      return false;
+    }
+    return true;
+  });
+}
+
+document.getElementById("fileInput").onchange = event => {
+  const files = sanitizeUploadFiles(event.target.files);
+  event.target.value = "";
+  if (files.length) uploadFiles(files);
+};
+
+document.getElementById("folderInput").onchange = event => {
+  const files = sanitizeUploadFiles(event.target.files);
+  event.target.value = "";
+  if (files.length) uploadFiles(files);
+};
 const dropZone = document.getElementById("dropZone");
 dropZone.addEventListener("dragover", event => { event.preventDefault(); dropZone.classList.add("drag-active"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-active"));
-dropZone.addEventListener("drop", event => { event.preventDefault(); dropZone.classList.remove("drag-active"); uploadFiles(event.dataTransfer.files); });
-document.addEventListener("paste", event => { const files = Array.from(event.clipboardData?.files || []); if (files.length) uploadFiles(files); });
+dropZone.addEventListener("drop", event => {
+  event.preventDefault();
+  dropZone.classList.remove("drag-active");
+  const files = sanitizeUploadFiles(event.dataTransfer.files);
+  if (files.length) uploadFiles(files);
+});
+
+document.addEventListener("paste", event => {
+  const files = sanitizeUploadFiles(event.clipboardData?.files);
+  if (files.length) uploadFiles(files);
+});
 document.getElementById("newFolderBtn").onclick = async () => {
   const name = await editText("Create a folder", "The folder will be created inside the current shared location.", "Folder name"); if (!name) return;
   const path = currentPath ? `${currentPath}/${name}` : name;
@@ -1022,3 +1087,77 @@ refreshDevices();
 refreshNetworkInfo();
 setInterval(refreshDevices, 5000);
 setInterval(refreshNetworkInfo, 30000);
+
+
+/* --- Storage Management & Data Maintenance --- */
+async function refreshStorageInfo() {
+  try {
+    const res = await fetch("/api/storage-info");
+    if (!res.ok) return;
+    const data = await res.json();
+    
+    const freeEl = document.getElementById("metricFreeDisk");
+    const totalEl = document.getElementById("metricTotalDisk");
+    const sharedSizeEl = document.getElementById("metricSharedSize");
+    const sharedCountEl = document.getElementById("metricSharedCount");
+    const partSizeEl = document.getElementById("metricPartialSize");
+    const partCountEl = document.getElementById("metricPartialCount");
+
+    if (freeEl) freeEl.textContent = formatBytes(data.disk_free);
+    if (totalEl) totalEl.textContent = `of ${formatBytes(data.disk_total)} total`;
+    if (sharedSizeEl) sharedSizeEl.textContent = formatBytes(data.shared_files_bytes);
+    if (sharedCountEl) sharedCountEl.textContent = `${data.shared_files_count} files stored`;
+    if (partSizeEl) partSizeEl.textContent = formatBytes(data.partial_bytes);
+    if (partCountEl) partCountEl.textContent = `${data.partial_count} partial chunks`;
+  } catch (err) {
+    console.error("Storage info error:", err);
+  }
+}
+
+document.getElementById("cleanPartialsBtn")?.addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/clear-partials", { method: "POST" });
+    const data = await res.json();
+    showNotice(`Cleaned ${data.removed} partial file(s) and reclaimed ${formatBytes(data.reclaimed_bytes)}!`, "success");
+    refreshStorageInfo();
+  } catch (err) {
+    showNotice(`Failed to clean partials: ${err.message}`, "error");
+  }
+});
+
+document.getElementById("clearHistoryBtn")?.addEventListener("click", async () => {
+  if (!confirm("Are you sure you want to clear transfer history logs?")) return;
+  try {
+    const res = await fetch("/api/clear-history", { method: "POST" });
+    const data = await res.json();
+    showNotice("Transfer log history cleared.", "success");
+    refreshDevices();
+    refreshStorageInfo();
+  } catch (err) {
+    showNotice(`Failed to clear history: ${err.message}`, "error");
+  }
+});
+
+document.getElementById("resetStateBtn")?.addEventListener("click", async () => {
+  if (!confirm("Reset all registered devices and database state? (Your actual files in the folder will not be deleted)")) return;
+  try {
+    const res = await fetch("/api/reset-state", { method: "POST" });
+    const data = await res.json();
+    showNotice("All devices and stored state successfully reset.", "success");
+    refreshDevices();
+    refreshStorageInfo();
+  } catch (err) {
+    showNotice(`Failed to reset: ${err.message}`, "error");
+  }
+});
+
+// Refresh storage info when switching to storage tab
+const origSwitchTab = switchTab;
+switchTab = function(targetSectionId, updateHash = false) {
+  origSwitchTab(targetSectionId, updateHash);
+  if (targetSectionId === "storageMgrSection" || targetSectionId === "storageSection") {
+    refreshStorageInfo();
+  }
+};
+
+setInterval(refreshStorageInfo, 25000);

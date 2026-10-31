@@ -1,3 +1,51 @@
+
+def start_reloader_watcher():
+    """Background thread watching python and frontend files; auto-restarts server on changes."""
+    import threading
+    import time
+    
+    watch_dirs = [
+        PROJECT_ROOT / "backend",
+        PROJECT_ROOT / "static",
+        PROJECT_ROOT / "run.py",
+    ]
+    
+    def get_mtimes():
+        mtimes = {}
+        for item in watch_dirs:
+            if item.is_file():
+                try:
+                    mtimes[str(item)] = item.stat().st_mtime
+                except OSError:
+                    pass
+            elif item.is_dir():
+                for root, _, files in os.walk(item):
+                    for file in files:
+                        if file.endswith((".py", ".html", ".js", ".css")):
+                            fp = os.path.join(root, file)
+                            try:
+                                mtimes[fp] = os.path.getmtime(fp)
+                            except OSError:
+                                pass
+        return mtimes
+
+    initial_mtimes = get_mtimes()
+
+    def watch_loop():
+        time.sleep(2)
+        while True:
+            time.sleep(1)
+            current_mtimes = get_mtimes()
+            for path, mtime in current_mtimes.items():
+                if path in initial_mtimes and mtime > initial_mtimes[path] + 0.1:
+                    print(f"\n[RELOAD] Detected change in {os.path.basename(path)}. Reloading server...")
+                    os._exit(42)  # Exit code 42 triggers automatic restart loop
+                elif path not in initial_mtimes:
+                    initial_mtimes[path] = mtime
+
+    watcher = threading.Thread(target=watch_loop, daemon=True)
+    watcher.start()
+
 """Project root entry point for SuperShare."""
 import sys
 import os
@@ -391,6 +439,7 @@ def main():
             f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
         )
 
+        start_reloader_watcher()
         web.run_app(
             create_app(port=active_port, tls_info=tls_info),
             host=HOST,
@@ -415,4 +464,9 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    while True:
+        exit_code = main()
+        if exit_code == 42:
+            time.sleep(0.5)
+            continue
+        raise SystemExit(exit_code)

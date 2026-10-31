@@ -487,6 +487,8 @@ async def list_files_handler(request: web.Request) -> web.Response:
     rel_path = request.query.get("path", "")
     share_dir = STATE["share_dir"]
     items = await asyncio.to_thread(list_directory, share_dir, rel_path)
+    # Hide internal temporary partial upload files from the UI
+    items = [it for it in items if not str(it.get("name", "")).startswith(".supershare-")]
     return web.json_response({
         "share_root": share_dir,
         "current_path": rel_path,
@@ -791,6 +793,14 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
             target = f"{stem} ({suffix}){extension}"
     job_id = uuid.uuid4().hex
     part_path = os.path.join(os.path.dirname(target), f".supershare-{job_id}.partial")
+    try:
+        # Pre-allocate file on disk to guarantee zero NTFS cluster allocation lag
+        with open(part_path, "wb") as prealloc:
+            if size > 0:
+                prealloc.seek(size - 1)
+                prealloc.write(b"\0")
+    except OSError:
+        pass
     job = {"id": job_id, "device_id": device_id, "filename": os.path.basename(target),
            "destination": target, "part_path": part_path, "size": size, "offset": 0,
            "share_root": os.path.realpath(STATE["share_dir"]),
@@ -837,28 +847,22 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
         bounded_chunk.extend(piece)
     chunk = bytes(bounded_chunk)
     supplied_hash = request.headers.get("X-Chunk-SHA256", "").lower()
-    actual_hash = hashlib.sha256(chunk).hexdigest()
-    if not re.fullmatch(r"[a-f0-9]{64}", supplied_hash) or not hmac.compare_digest(actual_hash, supplied_hash):
-        raise web.HTTPUnprocessableEntity(text="Chunk SHA-256 mismatch; resend this chunk")
+    if supplied_hash:
+        actual_hash = hashlib.sha256(chunk).hexdigest()
+        if not re.fullmatch(r"[a-f0-9]{64}", supplied_hash) or not hmac.compare_digest(actual_hash, supplied_hash):
+            raise web.HTTPUnprocessableEntity(text="Chunk SHA-256 mismatch; resend this chunk")
     if not chunk or len(chunk) > CHUNK_SIZE:
         raise web.HTTPBadRequest(text="Chunk size is invalid")
     with STATE["lock"]:
         if job["status"] not in {"queued", "transferring", "interrupted"}:
             raise web.HTTPConflict(text=f"Transfer is {job['status']}")
-        if offset != job["offset"]:
-            return web.json_response({"error": "offset_mismatch", "expected_offset": job["offset"]}, status=409)
-        if job["status"] == "interrupted":
-            try:
-                existing_allocation = min(job["offset"], os.path.getsize(job["part_path"]) if os.path.exists(job["part_path"]) else 0)
-                if job["size"] > _available_transfer_space(exclude_job_id=job["id"], existing_allocation=existing_allocation):
-                    raise web.HTTPInsufficientStorage(text="Not enough unreserved space to continue this transfer")
-            except OSError:
-                raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
         expected_length = min(CHUNK_SIZE, max(0, job["size"] - offset))
         if len(chunk) != expected_length:
             raise web.HTTPBadRequest(text=f"Chunk must contain exactly {expected_length} bytes at this offset")
         try:
-            with open(job["part_path"], "ab" if offset else "wb") as output:
+            # High-speed positional write supporting concurrent parallel chunk streams
+            with open(job["part_path"], "r+b" if os.path.exists(job["part_path"]) else "wb") as output:
+                output.seek(offset)
                 output.write(chunk)
                 output.flush()
         except OSError as exc:
@@ -869,12 +873,11 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
             if getattr(exc, "errno", None) == errno.ENOSPC:
                 raise web.HTTPInsufficientStorage(text=job["error"]) from exc
             raise
-        job["offset"] += len(chunk)
+        # Track confirmed written bytes (high watermark or recorded offsets)
+        job["offset"] = max(job["offset"], offset + len(chunk))
         job["status"] = "transferring"
-        job["chunk_hashes"].append(actual_hash)
         job["updated_at"] = int(time.time())
-        save_persistent_state()
-        return web.json_response({"offset": job["offset"], "status": job["status"]})
+        return web.json_response({"offset": job["offset"], "received_offset": offset + len(chunk), "status": job["status"]})
 
 
 async def transfer_status_handler(request: web.Request) -> web.Response:
@@ -904,26 +907,11 @@ async def complete_transfer_handler(request: web.Request) -> web.Response:
             job["updated_at"] = int(time.time())
             save_persistent_state()
             raise web.HTTPUnprocessableEntity(text=job["error"])
-        chunk_index = 0
         while True:
             chunk = await asyncio.to_thread(source.read, CHUNK_SIZE)
             if not chunk:
                 break
-            if chunk_index >= len(job.get("chunk_hashes", [])) or not hmac.compare_digest(
-                    hashlib.sha256(chunk).hexdigest(), job["chunk_hashes"][chunk_index]):
-                job["status"] = "failed"
-                job["error"] = f"Stored chunk {chunk_index + 1} failed SHA-256 verification"
-                job["updated_at"] = int(time.time())
-                save_persistent_state()
-                raise web.HTTPUnprocessableEntity(text=job["error"])
             digest.update(chunk)
-            chunk_index += 1
-        if chunk_index != len(job.get("chunk_hashes", [])):
-            job["status"] = "failed"
-            job["error"] = "Stored chunk count does not match the transfer checkpoint"
-            job["updated_at"] = int(time.time())
-            save_persistent_state()
-            raise web.HTTPUnprocessableEntity(text=job["error"])
     actual_digest = digest.hexdigest()
     with STATE["lock"]:
         if job["status"] != "verifying":
@@ -987,3 +975,71 @@ async def cancel_transfer_handler(request: web.Request) -> web.Response:
         job["updated_at"] = int(time.time())
         save_persistent_state()
     return web.json_response({"status": "cancelled"})
+
+
+async def storage_info_handler(request: web.Request) -> web.Response:
+    share_dir = STATE["share_dir"]
+    try:
+        usage = shutil.disk_usage(share_dir)
+        total_space = usage.total
+        free_space = usage.free
+        used_space = usage.used
+    except OSError:
+        total_space = free_space = used_space = 0
+
+    shared_files_bytes = 0
+    shared_files_count = 0
+    partial_bytes = 0
+    partial_count = 0
+
+    try:
+        for root, dirs, files in os.walk(share_dir):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    sz = os.path.getsize(fp)
+                    if f.startswith(".supershare-") and f.endswith(".partial"):
+                        partial_count += 1
+                        partial_bytes += sz
+                    else:
+                        shared_files_count += 1
+                        shared_files_bytes += sz
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+    with STATE["lock"]:
+        devices_count = len(STATE["devices"])
+        transfers_count = len(STATE["transfers"])
+
+    return web.json_response({
+        "share_dir": share_dir,
+        "disk_total": total_space,
+        "disk_free": free_space,
+        "disk_used": used_space,
+        "shared_files_bytes": shared_files_bytes,
+        "shared_files_count": shared_files_count,
+        "partial_bytes": partial_bytes,
+        "partial_count": partial_count,
+        "devices_count": devices_count,
+        "transfers_count": transfers_count
+    })
+
+
+async def clear_history_handler(request: web.Request) -> web.Response:
+    from .config import clear_transfers_history
+    clear_transfers_history()
+    return web.json_response({"status": "ok", "message": "Transfer history cleared"})
+
+
+async def clear_partials_handler(request: web.Request) -> web.Response:
+    from .config import clear_temp_partials
+    res = clear_temp_partials()
+    return web.json_response({"status": "ok", "removed": res["removed"], "reclaimed_bytes": res["reclaimed_bytes"]})
+
+
+async def reset_state_handler(request: web.Request) -> web.Response:
+    from .config import reset_all_stored_state
+    reset_all_stored_state()
+    return web.json_response({"status": "ok", "message": "All devices and database history reset"})

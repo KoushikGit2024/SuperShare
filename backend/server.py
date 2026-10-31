@@ -23,6 +23,10 @@ from .api_routes import (
     host_folders_handler,
     pick_host_gui_handler,
     set_share_dir_handler,
+    storage_info_handler,
+    clear_history_handler,
+    clear_partials_handler,
+    reset_state_handler,
     mkdir_handler,
     delete_selected_handler,
     download_handler,
@@ -153,6 +157,10 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.router.add_post("/api/mkdir", mkdir_handler)
     app.router.add_post("/api/delete-selected", delete_selected_handler)
     app.router.add_post("/api/set-share-dir", set_share_dir_handler)
+    app.router.add_get("/api/storage-info", storage_info_handler)
+    app.router.add_post("/api/clear-history", clear_history_handler)
+    app.router.add_post("/api/clear-partials", clear_partials_handler)
+    app.router.add_post("/api/reset-state", reset_state_handler)
 
     # Static assets
     app.router.add_static("/static/", STATIC_DIR, show_index=False)
