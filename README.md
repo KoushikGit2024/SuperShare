@@ -14,7 +14,7 @@ The browser fallback uploads files to the laptop host. It does not yet send to a
 python run.py
 ```
 
-SuperShare starts with normal user permissions. It prints a session pairing code and the available local URLs. Connect the phone and laptop to the same hotspot or Wi-Fi, open the laptop URL on the phone, choose **Pair with host**, and enter the code shown in the host terminal. Then grant read, send, or both permissions in the laptop dashboard.
+SuperShare starts with normal user permissions. It prints a session pairing code and the available local URLs. Connect the phone and laptop to the same hotspot or Wi-Fi, open the laptop URL on the phone, choose **Pair with host**, and enter the code shown in the host terminal. Compare the three-word phrase on the phone and laptop, confirm it on the phone, then grant read, send, or both permissions in the laptop dashboard.
 
 Windows firewall or hotspot isolation settings may prevent clients from reaching the server. SuperShare does not change the Windows firewall or network profile automatically. If needed, allow the server port on the private hotspot network through Windows settings.
 

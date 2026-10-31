@@ -55,7 +55,9 @@ Other native peers ────────────────────�
 - **Phase 0:** working defaults below are recorded and guide implementation.
 - **Phase 1:** implementation foundation is in place. Both launch paths use one aiohttp server; duplicated legacy handlers and assets are removed. The backend has SQLite state with legacy JSON import, persistent receive root, local-only host controls, pairing-code exchange with per-device token hashes, approval-gated remote file access, per-device read/write scopes, canonical path containment, atomic no-overwrite uploads, and standard-user startup without automatic Windows network changes.
 - **Phase 1 remaining:** validate on real Windows/hotspot/browser combinations and assess trusted TLS for local use. Pairing credentials currently travel over local HTTP, so use a trusted private hotspot. Phase 1 will be called complete after those checks are possible.
-- **Phase 2 onward:** not started.
+- **Phase 2:** in progress. Browser devices now pair with a session code and per-device credential; a three-word phrase is shown on both sides, the joining device must confirm it, and host permission grants are blocked until that confirmation. Read/send scopes, rename, trust, revoke, and forget are implemented.
+- **Phase 2 remaining:** move from browser-profile identity to native device identity, add QR pairing and richer per-device permission/root management, and confirm revocation behavior on real clients.
+- **Phase 3 onward:** not started.
 
 ## Phase 0 decisions and working defaults
 

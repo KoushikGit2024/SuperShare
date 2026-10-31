@@ -26,6 +26,10 @@ from .file_manager import (
 
 _pair_attempts = {}
 _device_persisted_at = {}
+_PAIRING_WORDS = ("amber", "birch", "cobalt", "delta", "ember", "fern", "granite", "harbor",
+                  "indigo", "juniper", "kepler", "linen", "maple", "north", "onyx", "pepper",
+                  "quartz", "river", "silver", "timber", "umber", "violet", "willow", "xenon",
+                  "yellow", "zephyr")
 
 
 async def status_handler(request: web.Request) -> web.Response:
@@ -96,6 +100,8 @@ async def upload_permission_handler(request: web.Request) -> web.Response:
         readable = approved and permissions.get("read", False)
     message = "Ready to send" if allowed else "Host granted read-only access" if readable else "Waiting for host approval" if paired else "Pair with the host first"
     return web.json_response({"allowed": allowed, "approved": approved, "paired": paired,
+                              "pair_confirmed": bool(device.get("pair_confirmed", False)) if paired else False,
+                              "verification_phrase": device.get("verification_phrase") if paired else None,
                               "permissions": permissions, "device_id": device_id, "message": message})
 
 
@@ -116,18 +122,32 @@ async def pair_device_handler(request: web.Request) -> web.Response:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         raise web.HTTPBadRequest(text="Invalid device identity")
     token = secrets.token_urlsafe(32)
+    phrase = " ".join(secrets.choice(_PAIRING_WORDS) for _ in range(3))
     _touch_device(device_id, str(body.get("name", "Unknown device")), str(body.get("type", "Device")), request.remote)
     with STATE["lock"]:
         device = STATE["devices"][device_id]
         device["token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
         device["trusted"] = False
         device["permissions"] = {"read": False, "write": False}
+        device["pair_confirmed"] = False
+        device["verification_phrase"] = phrase
         device.pop("approved_until", None)
     save_persistent_state()
     _device_persisted_at[device_id] = time.monotonic()
-    response = web.json_response({"status": "paired", "device_id": device_id})
+    response = web.json_response({"status": "paired", "device_id": device_id, "verification_phrase": phrase})
     response.set_cookie("supershare_token", token, httponly=True, samesite="Strict", path="/api", max_age=31536000)
     return response
+
+
+async def confirm_pairing_handler(request: web.Request) -> web.Response:
+    device_id = request.headers.get("X-SuperShare-Device", "").strip()
+    with STATE["lock"]:
+        device = STATE["devices"].get(device_id, {})
+        if not _authenticated_device(request, device):
+            raise web.HTTPForbidden(text="This device is not paired")
+        device["pair_confirmed"] = True
+    save_persistent_state()
+    return web.json_response({"status": "confirmed"})
 
 
 def _touch_device(device_id, name, device_type, remote):
@@ -154,6 +174,8 @@ def _touch_device(device_id, name, device_type, remote):
             "approved_until": old.get("approved_until", 0),
             "token_hash": old.get("token_hash", ""),
             "permissions": old.get("permissions", {"read": False, "write": False}),
+            "pair_confirmed": old.get("pair_confirmed", False),
+            "verification_phrase": old.get("verification_phrase", ""),
         }
     if persist:
         save_persistent_state()
@@ -167,6 +189,7 @@ def _public_devices():
         for device in STATE["devices"].values():
             item = dict(device)
             item["paired"] = bool(item.get("token_hash"))
+            item["pair_confirmed"] = bool(item.get("pair_confirmed", False))
             item.pop("token_hash", None)
             item["online"] = now - item.get("last_seen", 0) < 25
             result.append(item)
@@ -260,6 +283,8 @@ async def approve_device_handler(request: web.Request) -> web.Response:
             raise web.HTTPNotFound(text="Device not found")
         if not device.get("token_hash"):
             raise web.HTTPConflict(text="Pair this device before granting access")
+        if not device.get("pair_confirmed"):
+            raise web.HTTPConflict(text="Confirm that the verification phrase matches before granting access")
         requested = body.get("permissions", {"read": True, "write": True})
         if not isinstance(requested, dict):
             raise web.HTTPBadRequest(text="Permissions must be an object")

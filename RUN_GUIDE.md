@@ -15,7 +15,8 @@ SuperShare runs with normal user permissions. The terminal shows the current ses
 1. Turn on the laptop hotspot and connect the phone to it. Internet access is not required.
 2. Open the laptop URL printed by SuperShare in the phone browser.
 3. Choose **Pair with host** and enter the code from the laptop terminal.
-4. On the laptop dashboard, grant read, send, or both for 15 minutes, or trust the device with both permissions.
+4. Compare the three-word phrase shown on the phone and laptop, then confirm on the phone.
+5. On the laptop dashboard, grant read, send, or both for 15 minutes, or trust the device with both permissions.
 
 The phone can access shared files and upload only within the permissions granted. Restarting SuperShare rotates the session pairing code; already paired device credentials remain stored until forgotten or revoked.
 

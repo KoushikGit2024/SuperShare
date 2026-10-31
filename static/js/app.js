@@ -52,6 +52,9 @@ async function checkUploadPermission() {
   if (!response.ok) throw new Error(`Connection check failed (${response.status})`);
   const result = await response.json();
   const canRead = Boolean(result.approved && result.permissions?.read);
+  const phrasePanel = document.getElementById("pairPhrasePanel");
+  phrasePanel.classList.toggle("hidden", !result.paired || result.pair_confirmed || !result.verification_phrase);
+  if (result.verification_phrase) document.getElementById("pairPhrase").textContent = result.verification_phrase;
   setConnectionState(result.allowed ? "Approved to send" : canRead ? "Host granted read-only access" : result.approved ? "Host granted send-only access" : result.paired ? "Waiting for host approval" : "Pair with the host", result.allowed || canRead ? "online" : "pending");
   const localHost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   document.getElementById("pairDeviceBtn").classList.toggle("hidden", result.paired || localHost);
@@ -66,9 +69,16 @@ async function pairThisDevice() {
     const response = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, id: localDeviceId, name: localDeviceName, type: localDeviceType }) });
     if (!response.ok) throw new Error(await responseError(response));
     const result = await response.json();
-    showNotice("Device paired. Approve it from the laptop dashboard before sending files.", "success");
+    showNotice("Compare the verification phrase on the laptop, then confirm it here.", "success");
     await refreshDevices();
   } catch (error) { showNotice(error.message, "error"); }
+}
+
+async function confirmPairingPhrase() {
+  const response = await fetch("/api/devices/confirm-pairing", { method: "POST", headers: deviceHeaders(), credentials: "same-origin" });
+  if (!response.ok) { showNotice(await responseError(response), "error"); return; }
+  showNotice("Phrase confirmed. The laptop can now grant this device access.", "success");
+  refreshDevices();
 }
 
 async function deviceAction(url, body) {
@@ -109,20 +119,23 @@ async function refreshDevices() {
       avatar.appendChild(icon(device.type === "Android" || device.type === "iOS" ? "device-mobile" : "monitor"));
       const info = document.createElement("div"); info.className = "device-info";
       const title = document.createElement("strong"); title.textContent = device.name + (device.id === localDeviceId ? " (this device)" : "");
-      const meta = document.createElement("span"); meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${new Date(device.last_seen * 1000).toLocaleTimeString()}`;
+      const phraseText = device.paired && !device.pair_confirmed && device.verification_phrase ? ` · Verify phrase: ${device.verification_phrase}` : "";
+      const meta = document.createElement("span"); meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${new Date(device.last_seen * 1000).toLocaleTimeString()}${phraseText}`;
       info.append(title, meta); main.append(avatar, info);
       const paired = Boolean(device.paired);
+      const phraseConfirmed = Boolean(device.pair_confirmed);
       const accessActive = device.trusted || (device.approved_until || 0) > Math.floor(Date.now() / 1000);
       const hasPermission = Boolean(device.permissions?.read || device.permissions?.write);
-      const pending = paired && !(accessActive && hasPermission);
+      const pending = paired && !(phraseConfirmed && accessActive && hasPermission);
       const state = document.createElement("span"); state.className = `device-state ${!paired || pending ? "pending" : device.online ? "online" : "offline"}`;
       if (!paired) state.append(icon("pending"), document.createTextNode(" Pairing incomplete"));
+      else if (!phraseConfirmed) state.append(icon("pending"), document.createTextNode(" Verify phrase"));
       else if (pending) state.append(icon("pending"), document.createTextNode(" Needs approval"));
       else state.textContent = `${device.online ? "Online" : "Offline"} · ${device.permissions?.read ? "Read" : ""}${device.permissions?.read && device.permissions?.write ? " + " : ""}${device.permissions?.write ? "Send" : ""}`;
       li.append(main, state);
       if (device.id !== localDeviceId) {
         const controls = document.createElement("div"); controls.className = "device-controls";
-        if (pending) {
+        if (pending && phraseConfirmed) {
           const approve = (label, permissions, remember = false) => {
             const button = document.createElement("button"); button.className = remember ? "btn-xs outline" : "btn-xs accent"; button.textContent = label;
             button.onclick = async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions, remember })) refreshDevices(); };
@@ -171,6 +184,7 @@ function showDirectoryError(error) {
 }
 
 document.getElementById("pairDeviceBtn").addEventListener("click", pairThisDevice);
+document.getElementById("confirmPairingBtn").addEventListener("click", confirmPairingPhrase);
 
 function renderTransfers(transfers) {
   const list = document.getElementById("transferList"); list.replaceChildren();

@@ -11,6 +11,7 @@ from .api_routes import (
     status_handler,
     upload_permission_handler,
     pair_device_handler,
+    confirm_pairing_handler,
     devices_handler,
     rename_device_handler,
     forget_device_handler,
@@ -68,6 +69,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/status", status_handler)
     app.router.add_get("/api/upload-permission", upload_permission_handler)
     app.router.add_post("/api/pair", pair_device_handler)
+    app.router.add_post("/api/devices/confirm-pairing", confirm_pairing_handler)
     app.router.add_get("/api/devices", devices_handler)
     app.router.add_post("/api/devices/rename", rename_device_handler)
     app.router.add_post("/api/devices/forget", forget_device_handler)

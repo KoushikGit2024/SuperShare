@@ -21,6 +21,11 @@ body { margin: 0; padding: 16px 16px 96px 16px; background: var(--bg); color: va
 .section-heading h2 { margin-bottom: 4px; }
 .section-heading p { margin: 0 0 14px; color: var(--muted); font-size: .82rem; }
 .route-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px; margin: -2px 0 14px; background: #14171e; border: 1px solid var(--border); border-radius: 8px; }
+.pair-phrase { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; margin: -4px 0 14px; background: #211c12; border: 1px solid #6b4d18; border-radius: 8px; }
+.pair-phrase > div { display: flex; flex-direction: column; gap: 4px; }
+.pair-phrase strong { color: #fbbf24; font-size: .86rem; }
+.pair-phrase code { color: #f4f4f5; font: 600 1rem ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; }
+.pair-phrase span { color: var(--muted); font-size: .76rem; }
 .route-item { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .route-item strong { color: var(--muted); font-size: .68rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .route-item span, .route-item code { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
@@ -113,4 +118,4 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary)
 .modal-folder-list li:hover { background: var(--card-hover); }
 button, a, label { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
 button:focus-visible, a:focus-visible, label:focus-within { outline: 2px solid #0078d4; outline-offset: 2px; }
-@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } }
+@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase { align-items: flex-start; flex-direction: column; } }
