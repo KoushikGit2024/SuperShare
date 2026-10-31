@@ -23,9 +23,10 @@
     </header>
 
     <section class="card network-card" id="networkSection" aria-labelledby="networkTitle">
-      <div class="section-heading"><div><h2 id="networkTitle">Local connection</h2><p>Connect this laptop and phone to the same hotspot. Internet access is not required.</p></div><button id="copyConnectionBtn" class="btn-xs outline" type="button">Copy connection address</button></div>
+      <div class="section-heading"><div><h2 id="networkTitle">Local connection</h2><p>Connect this laptop and phone to the same hotspot. Internet access is not required.</p></div><div class="network-actions"><button id="copyConnectionBtn" class="btn-xs outline" type="button">Copy connection address</button><button id="showPairQrBtn" class="btn-xs accent hidden" type="button">Show pairing QR</button></div></div>
       <div id="networkAddresses" class="network-addresses" aria-live="polite">Checking local network addresses…</div>
       <div id="networkStatus" class="network-status">Checking SuperShare service</div>
+      <div id="pairQrPanel" class="pair-qr hidden"><img id="pairQrImage" alt="QR code for opening SuperShare and pairing on this hotspot"><p>Scan with the phone camera while it is connected to this hotspot. Confirm the verification phrase on both devices.</p></div>
     </section>
 
     <section class="card device-card" id="devicesSection">

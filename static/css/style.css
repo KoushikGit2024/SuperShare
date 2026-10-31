@@ -19,6 +19,10 @@ body { margin: 0; padding: 16px 16px 96px 16px; background: var(--bg); color: va
 .network-addresses code { padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: #bfdbfe; }
 .network-status { margin-top: 10px; color: #86efac; font-size: .8rem; }
 .network-status.error { color: #fda4af; }
+.network-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.pair-qr { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.pair-qr img { width: 180px; height: 180px; padding: 8px; background: white; border-radius: 6px; }
+.pair-qr p { color: var(--muted); font-size: .82rem; }
 .transfer-filter-label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: .8rem; }
 .transfer-filter-label select { color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 14px; }
@@ -130,4 +134,4 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary)
 .modal-folder-list li:hover { background: var(--card-hover); }
 button, a, label { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
 button:focus-visible, a:focus-visible, label:focus-within { outline: 2px solid #0078d4; outline-offset: 2px; }
-@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase, .pair-qr { align-items: flex-start; flex-direction: column; } }

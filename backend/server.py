@@ -6,7 +6,6 @@ import platform
 import socket
 import asyncio
 import json
-import ipaddress
 from aiohttp import web
 
 from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR
@@ -31,13 +30,14 @@ from .api_routes import (
     zip_selected_handler,
     upload_handler,
     network_handler,
+    pairing_qr_handler,
     diagnostics_handler,
     create_transfer_handler,
     transfer_chunk_handler,
     transfer_status_handler,
     complete_transfer_handler,
     cancel_transfer_handler,
-    _host_addresses,
+    _host_interfaces,
 )
 
 # --- Windows asyncio fix (prevents noisy ConnectionResetError on close, from NER_RMCH) ---
@@ -62,15 +62,11 @@ async def index_handler(request: web.Request) -> web.Response:
 async def _discovery_broadcaster(app):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    payload = json.dumps({"service": "SuperShare", "protocol_version": 1, "port": PORT}).encode("utf-8")
     try:
         while True:
-            targets = {"255.255.255.255"}
-            for address in _host_addresses():
-                try:
-                    targets.add(str(ipaddress.IPv4Interface(f"{address}/24").network.broadcast_address))
-                except ValueError:
-                    pass
+            payload = json.dumps({"service": "SuperShare", "protocol_version": 1, "port": app["port"]}).encode("utf-8")
+            targets = {item["broadcast"] for item in _host_interfaces() if item.get("broadcast")}
+            targets.add("255.255.255.255")
             for target in targets:
                 try:
                     sock.sendto(payload, (target, 8766))
@@ -107,9 +103,10 @@ async def api_error_middleware(request: web.Request, handler):
         raise web.HTTPNotFound(text=str(exc)) from exc
 
 
-def create_app() -> web.Application:
+def create_app(port=PORT) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
     app = web.Application(client_max_size=0, middlewares=[api_error_middleware])
+    app["port"] = port
     app.on_startup.append(_start_discovery)
     app.on_cleanup.append(_stop_discovery)
 
@@ -119,6 +116,7 @@ def create_app() -> web.Application:
     # REST & Streaming API
     app.router.add_get("/api/status", status_handler)
     app.router.add_get("/api/network", network_handler)
+    app.router.add_get("/api/pairing-qr", pairing_qr_handler)
     app.router.add_get("/api/diagnostics", diagnostics_handler)
     app.router.add_get("/api/upload-permission", upload_permission_handler)
     app.router.add_post("/api/pair", pair_device_handler)
@@ -173,4 +171,4 @@ if __name__ == "__main__":
     print("=" * 55 + "\n")
     print("  Press CTRL+C to stop.\n")
 
-    web.run_app(create_app(), host=HOST, port=PORT, print=None)
+    web.run_app(create_app(port=PORT), host=HOST, port=PORT, print=None)

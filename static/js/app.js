@@ -48,6 +48,7 @@ function setConnectionState(text, type = "pending") {
 }
 
 let preferredConnectionUrl = "";
+const pairingCodeFromQr = new URLSearchParams(location.search).get("pair_code");
 async function refreshNetworkInfo() {
   const addresses = document.getElementById("networkAddresses");
   const status = document.getElementById("networkStatus");
@@ -56,12 +57,14 @@ async function refreshNetworkInfo() {
     if (!response.ok) throw new Error(await responseError(response));
     const info = await response.json();
     addresses.replaceChildren();
-    const hosts = info.addresses?.length ? info.addresses : [location.hostname];
-    hosts.forEach(host => {
-      const url = `${location.protocol}//${host}:${info.port}/`;
-      const code = document.createElement("code"); code.textContent = url; addresses.appendChild(code);
+    const networkInterfaces = info.interfaces?.length ? info.interfaces : (info.addresses || []).map(address => ({ name: "Network adapter", address }));
+    const candidates = networkInterfaces.length ? networkInterfaces : [{ name: "Current connection", address: location.hostname }];
+    candidates.forEach(adapter => {
+      const entry = document.createElement("code"); entry.textContent = `${adapter.name}: ${location.protocol}//${adapter.address}:${info.port}/`;
+      entry.title = adapter.netmask ? `IPv4 ${adapter.address} · mask ${adapter.netmask}${adapter.broadcast ? ` · broadcast ${adapter.broadcast}` : ""}` : adapter.address;
+      addresses.appendChild(entry);
     });
-    preferredConnectionUrl = `${location.protocol}//${hosts[0]}:${info.port}/`;
+    preferredConnectionUrl = `${location.protocol}//${candidates[0].address}:${info.port}/`;
     let extra = "";
     if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
       const diagnosticResponse = await fetch("/api/diagnostics", { cache: "no-store" });
@@ -86,6 +89,19 @@ document.getElementById("copyConnectionBtn").addEventListener("click", async () 
   } catch (_) { showNotice("Could not copy the connection address. Select and copy it from the Network section.", "error"); }
 });
 
+document.getElementById("showPairQrBtn").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/pairing-qr", { cache: "no-store" });
+    if (!response.ok) throw new Error(await responseError(response));
+    const panel = document.getElementById("pairQrPanel");
+    const image = document.getElementById("pairQrImage");
+    if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
+    image.dataset.objectUrl = URL.createObjectURL(await response.blob());
+    image.src = image.dataset.objectUrl;
+    panel.classList.remove("hidden");
+  } catch (error) { showNotice(error.message, "error"); }
+});
+
 async function checkUploadPermission() {
   const response = await fetch("/api/upload-permission", { headers: deviceHeaders(), credentials: "same-origin" });
   if (!response.ok) throw new Error(`Connection check failed (${response.status})`);
@@ -102,12 +118,13 @@ async function checkUploadPermission() {
 }
 
 async function pairThisDevice() {
-  const code = prompt("Enter the session pairing code shown in the SuperShare host window:");
+  const code = pairingCodeFromQr || prompt("Enter the session pairing code shown in the SuperShare host window:");
   if (!code) return;
   try {
     const response = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, id: localDeviceId, name: localDeviceName, type: localDeviceType }) });
     if (!response.ok) throw new Error(await responseError(response));
     const result = await response.json();
+    if (pairingCodeFromQr) history.replaceState({}, "", location.pathname);
     showNotice("Compare the verification phrase on the laptop, then confirm it here.", "success");
     await refreshDevices();
   } catch (error) { showNotice(error.message, "error"); }
@@ -138,6 +155,7 @@ async function refreshDevices() {
     const data = await response.json();
     document.getElementById("openDriveBrowserBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("nativePickerBtn").classList.toggle("hidden", !data.host_dashboard);
+    document.getElementById("showPairQrBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("destinationName").textContent = data.host_name || "This host";
     document.getElementById("destinationPath").textContent = data.share_root ? `${data.share_root}${currentPath ? `\\${currentPath.replaceAll("/", "\\")}` : ""}` : "Pair and get host approval to view the destination";
     const canUpload = await checkUploadPermission();
@@ -236,7 +254,9 @@ function renderTransfers(transfers) {
     const device = (window._lastDevices || []).find(item => item.id === t.device_id);
     const name = document.createElement("strong"); name.textContent = t.filename;
     const progressText = t.offset != null ? ` · ${formatBytes(t.offset)} of ${formatBytes(t.size || 0)}` : "";
-    const detail = document.createElement("span"); detail.textContent = `From ${device?.name || "Browser device"} to ${t.destination || "shared folder"} · ${formatBytes(t.size || 0)}${progressText} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
+    const from = t.direction === "send" ? "SuperShare host" : (device?.name || "Browser device");
+    const to = t.direction === "send" ? (device?.name || t.destination || "connected device") : (t.destination || "shared folder");
+    const detail = document.createElement("span"); detail.textContent = `From ${from} to ${to} · ${formatBytes(t.size || 0)}${progressText} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
     const status = document.createElement("span"); status.className = `transfer-state ${t.status}`; status.textContent = t.status;
     li.append(name, detail, status);
     if (["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
@@ -269,6 +289,63 @@ function formatBytes(bytes) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${parseFloat((bytes / Math.pow(1024, index)).toFixed(2))} ${units[index]}`;
+}
+
+const SHA256_K = new Uint32Array([
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+]);
+
+function sha256Bytes(message) {
+  const length = message.length;
+  const paddedLength = Math.ceil((length + 9) / 64) * 64;
+  const data = new Uint8Array(paddedLength); data.set(message); data[length] = 0x80;
+  const bitLength = length * 8;
+  const view = new DataView(data.buffer);
+  view.setUint32(paddedLength - 8, Math.floor(bitLength / 0x100000000));
+  view.setUint32(paddedLength - 4, bitLength >>> 0);
+  const hash = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const words = new Uint32Array(64);
+  const rotate = (value, count) => (value >>> count) | (value << (32 - count));
+  for (let offset = 0; offset < paddedLength; offset += 64) {
+    for (let index = 0; index < 16; index++) words[index] = view.getUint32(offset + index * 4);
+    for (let index = 16; index < 64; index++) {
+      const a = words[index - 15], b = words[index - 2];
+      const s0 = rotate(a, 7) ^ rotate(a, 18) ^ (a >>> 3);
+      const s1 = rotate(b, 17) ^ rotate(b, 19) ^ (b >>> 10);
+      words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0;
+    }
+    let [a,b,c,d,e,f,g,h] = hash;
+    for (let index = 0; index < 64; index++) {
+      const s1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+      const choose = (e & f) ^ (~e & g);
+      const temp1 = (h + s1 + choose + SHA256_K[index] + words[index]) >>> 0;
+      const s0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+      const majority = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (s0 + majority) >>> 0;
+      h = g; g = f; f = e; e = (d + temp1) >>> 0; d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    hash[0] = (hash[0] + a) >>> 0; hash[1] = (hash[1] + b) >>> 0;
+    hash[2] = (hash[2] + c) >>> 0; hash[3] = (hash[3] + d) >>> 0;
+    hash[4] = (hash[4] + e) >>> 0; hash[5] = (hash[5] + f) >>> 0;
+    hash[6] = (hash[6] + g) >>> 0; hash[7] = (hash[7] + h) >>> 0;
+  }
+  return [...hash].map(value => value.toString(16).padStart(8, "0")).join("");
+}
+
+async function sha256Blob(blob) {
+  const bytes = await blob.arrayBuffer();
+  if (globalThis.crypto?.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
+  }
+  return sha256Bytes(new Uint8Array(bytes));
 }
 
 function updateSelectionUI() {
@@ -450,8 +527,7 @@ async function uploadFiles(files, retryName = null) {
           const chunkSize = session.chunk_size;
           while (offset < file.size) {
             const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
-            const chunkHash = await crypto.subtle.digest("SHA-256", await chunk.arrayBuffer());
-            const chunkChecksum = [...new Uint8Array(chunkHash)].map(value => value.toString(16).padStart(2, "0")).join("");
+            const chunkChecksum = await sha256Blob(chunk);
             const response = await fetch(`/api/transfers/${session.id}/chunk`, { method: "PUT", headers: { ...deviceHeaders(), "X-Chunk-Offset": String(offset), "X-Chunk-SHA256": chunkChecksum }, credentials: "same-origin", body: chunk });
             if (!response.ok) throw new Error(await responseError(response));
             const result = await response.json(); offset = result.offset;

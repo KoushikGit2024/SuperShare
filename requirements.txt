@@ -1,1 +1,3 @@
 aiohttp
+psutil>=5.9
+qrcode>=7.4

@@ -16,46 +16,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from aiohttp import web
 from backend.server import create_app
 from backend.config import HOST, PORT, STATE, PAIRING_CODE, save_persistent_state
+from backend.api_routes import _host_interfaces
 
 
 def get_local_ips():
-    ips = set()
-
-    try:
-        hostname = socket.gethostname()
-
-        for info in socket.getaddrinfo(
-            hostname,
-            None,
-            socket.AF_INET
-        ):
-            ip = info[4][0]
-
-            if not ip.startswith("127."):
-                ips.add(ip)
-
-    except Exception:
-        pass
-
-    try:
-        s = socket.socket(
-            socket.AF_INET,
-            socket.SOCK_DGRAM
-        )
-
-        s.connect(("10.255.255.255", 1))
-
-        ip = s.getsockname()[0]
-
-        if not ip.startswith("127."):
-            ips.add(ip)
-
-        s.close()
-
-    except Exception:
-        pass
-
-    return sorted(ips, key=lambda ip: (not ip.startswith("192.168.137."), ip))
+    return [item["address"] for item in _host_interfaces()]
 
 
 def is_port_in_use(port):
@@ -183,7 +148,8 @@ def main():
     print(f"[OK] Port {active_port} is available.")
     print()
 
-    local_ips = get_local_ips()
+    local_interfaces = _host_interfaces()
+    local_ips = [item["address"] for item in local_interfaces]
 
     print(f"[SERVER] Shared Folder : {STATE['share_dir']}")
     print(f"[SERVER] Host          : {HOST}")
@@ -200,9 +166,10 @@ def main():
     if local_ips:
         print("[PHONE] Available SuperShare addresses:")
 
+        interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
             url = f"http://{ip}:{active_port}/"
-            print(f"     {url}")
+            print(f"     {interface_names.get(ip, 'Network adapter')}: {url}")
 
         primary_ip = local_ips[0]
         phone_url = f"http://{primary_ip}:{active_port}/"
@@ -234,7 +201,7 @@ def main():
         )
 
         web.run_app(
-            create_app(),
+            create_app(port=active_port),
             host=HOST,
             port=active_port,
             print=None

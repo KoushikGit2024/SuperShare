@@ -26,8 +26,8 @@ Use the laptop dashboard's host-folder browser or native folder picker to set th
 
 ## Network troubleshooting
 
-SuperShare does not automatically change Windows network profiles or firewall rules. If the phone cannot connect, check that both devices are on the same hotspot, that hotspot client isolation is disabled, and that Windows Firewall allows the configured TCP port on the private hotspot network.
+SuperShare does not automatically change Windows network profiles or firewall rules. If the phone cannot connect, check that both devices are on the same hotspot, that hotspot client isolation is disabled, and that Windows Firewall allows the configured TCP port on the private hotspot network. If automatic discovery is blocked, allow UDP port 8766 or use the address shown in the dashboard.
 
 ## Known limitations
 
-The browser interface sends files to the laptop host. Interrupted uploads can resume from acknowledged chunks by selecting the same file again in the same browser profile. Native Android system-share integration, direct peer-to-peer sending, and automatic discovery remain planned. Pairing currently uses local-network HTTP, so use a trusted private network.
+The browser interface sends files to the laptop host. Interrupted uploads can resume from acknowledged chunks by selecting the same file again in the same browser profile. The Android client project is under `android/`; its Sharesheet and document picker stream originals to the laptop host, and its browser lets you save approved laptop files into a phone document-provider destination. Direct peer-to-peer sending and background-resumable Android transfers are not implemented. Pairing currently uses local-network HTTP, so use a trusted private network.

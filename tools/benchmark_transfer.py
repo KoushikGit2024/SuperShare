@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--device-id", default=f"benchmark-{uuid.uuid4().hex[:12]}")
     parser.add_argument("--cookie", default="", help="Optional supershare_token cookie value")
     parser.add_argument("--output", type=Path, help="Optional JSON results path")
+    parser.add_argument("--keep-file", action="store_true", help="Keep the generated benchmark file in the selected host folder")
     args = parser.parse_args()
     path = args.file.resolve(strict=True)
     size = path.stat().st_size
@@ -52,10 +53,13 @@ def main():
             sent += len(chunk)
     completed = request(f"{base}/api/transfers/{transfer_id}/complete", "POST", b"{}", {**headers, "Content-Type": "application/json"})
     elapsed = time.perf_counter() - started
+    if not args.keep_file:
+        request(f"{base}/api/delete-selected", "POST", json.dumps({"items": [destination]}).encode(), {**headers, "Content-Type": "application/json"})
     result = {"host": base, "file": path.name, "destination": destination, "bytes": size, "seconds": round(elapsed, 3),
               "bytes_per_second": round(size / elapsed) if elapsed else 0,
               "sha256": digest.hexdigest(), "server_sha256": completed.get("sha256"),
-              "checksum_match": digest.hexdigest() == completed.get("sha256"), "chunk_size": CHUNK_SIZE}
+              "checksum_match": digest.hexdigest() == completed.get("sha256"), "chunk_size": CHUNK_SIZE,
+              "cleaned_up": not args.keep_file}
     print(json.dumps(result, indent=2))
     if args.output:
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

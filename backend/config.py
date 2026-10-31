@@ -9,6 +9,7 @@ import time
 import sqlite3
 import secrets
 import sys
+import shutil
 
 BACKEND_DIR = Path(__file__).resolve().parent
 BASE_DIR = BACKEND_DIR.parent
@@ -37,6 +38,18 @@ STATE = {
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = DATA_DIR / "supershare_state.json"  # legacy state import source
 DATABASE_FILE = DATA_DIR / "supershare_state.sqlite3"
+if getattr(sys, "frozen", False):
+    legacy_dir = Path(sys.executable).resolve().parent
+    legacy_database = legacy_dir / "supershare_state.sqlite3"
+    if legacy_database.exists() and not DATABASE_FILE.exists():
+        shutil.copy2(legacy_database, DATABASE_FILE)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(legacy_database) + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, Path(str(DATABASE_FILE) + suffix))
+    legacy_json = legacy_dir / "supershare_state.json"
+    if legacy_json.exists() and not STATE_FILE.exists():
+        shutil.copy2(legacy_json, STATE_FILE)
 PAIRING_CODE = secrets.token_urlsafe(9)
 
 
@@ -133,7 +146,7 @@ def save_persistent_state():
 load_persistent_state()
 
 
-def record_transfer(device_id, filename, size, status="completed", detail="", destination=None):
+def record_transfer(device_id, filename, size, status="completed", detail="", destination=None, direction="receive"):
     entry = {
         "id": f"{int(time.time() * 1000)}-{os.urandom(3).hex()}",
         "device_id": device_id,
@@ -143,6 +156,7 @@ def record_transfer(device_id, filename, size, status="completed", detail="", de
         "detail": detail,
         "timestamp": int(time.time()),
         "destination": destination or os.path.join(STATE["share_dir"], filename),
+        "direction": direction,
     }
     with STATE["lock"]:
         STATE["transfers"].append(entry)

@@ -4,17 +4,17 @@
 
 Build SuperShare as a private, local-network transfer system that works when the laptop hotspot has no internet access. A user should be able to identify each nearby device, decide which devices may send or receive, choose a destination, and understand exactly what is happening to every transfer. Files should stream from their current source where the platform allows it; SuperShare should not require users to stage files in a special folder.
 
-The first supported setup should remain Windows laptop as the hotspot-connected host and Android as the first native peer. The current browser interface is a useful host dashboard and fallback sender/receiver, but it is not a native Android share target and does not yet send directly to a selected peer.
+The first supported setup is a Windows laptop host and an Android peer on the same hotspot. The Android client can send files from system shares or the document picker to the laptop and can browse/download approved laptop files to a phone document-provider destination. Direct peer-to-peer device routing is not implemented.
 
 ## Current state
 
 - The primary runtime is `run.py` plus the `backend/` aiohttp application.
 - Both supported launch paths use the same backend and canonical `static/` UI; `app.server` is a compatibility import.
-- Browser profiles and the Android client scaffold have persistent random IDs, pairing credentials, phrase confirmation, approval, scoped read/send permissions, and host-side revocation. The Android identity and client are not device-validated.
+- Browser profiles and the Android client have persistent random IDs, pairing credentials, phrase confirmation, approval, scoped read/send permissions, and host-side revocation. The Android identity and client are not device-validated.
 - The host chooses one receive root. Remote access is token and approval gated; host folder browsing and root changes are local-dashboard only.
 - Browser and Android sender paths use durable chunk sessions, per-chunk SHA-256 checks, server whole-file hashes, atomic publication, collision choices, resume on browser same-file reselect, cancellation, and seven-day abandoned-session cleanup.
-- The Android app handles Sharesheet single/multiple content URIs and streams from the original provider without staging copies. It currently sends only to the laptop host.
-- The host announces itself over local UDP broadcast; the Android scaffold listens and offers manual address entry. QR pairing, TLS, Android receive, and persistent background transfers remain open.
+- The Android app handles Sharesheet single/multiple content URIs, the system document picker, and downloads to Android document providers without app staging copies.
+- The host announces itself over local UDP broadcast; the Android app listens and verifies the service handshake. A local dashboard QR opens the browser pairing flow; the Android app still uses a manually entered code. TLS and persistent background transfers remain open.
 - The dashboard includes device controls, connection addresses, free-space diagnostics, transfer state/progress/history filters, cancellation, browser drop/paste, and file browsing. Full accessibility and device-width review remains open.
 - Neither the Android app nor the frozen Windows package has been built and validated on target hardware. Real hotspot, restart/resume, large-file, and throughput measurements remain release gates.
 
@@ -56,14 +56,14 @@ Other native peers ────────────────────�
 - **Phase 0:** working defaults below are recorded and guide implementation.
 - **Phase 1:** implementation foundation is in place. Both launch paths use one aiohttp server; duplicated legacy handlers and assets are removed. The backend has SQLite state with legacy JSON import, persistent receive root, local-only host controls, pairing-code exchange with per-device token hashes, approval-gated remote file access, per-device read/write scopes, canonical path containment, atomic no-overwrite uploads, and standard-user startup without automatic Windows network changes.
 - **Phase 1 remaining:** validate on real Windows/hotspot/browser combinations and assess trusted TLS for local use. Pairing credentials currently travel over local HTTP, so use a trusted private hotspot. Phase 1 will be called complete after those checks are possible.
-- **Phase 2:** browser pairing and scoped access are implemented locally. Browser devices pair with a session code and per-device credential; a three-word phrase is shown on both sides, the joining device must confirm it, and host permission grants are blocked until that confirmation. Read/send scopes, rename, trust, revoke, and forget are implemented. Native identity and QR pairing remain open.
-- **Phase 2 remaining:** move from browser-profile identity to native device identity, add QR pairing and richer per-device permission/root management, and confirm revocation behavior on real clients.
-- **Phase 3:** transfer sessions support skip/rename/replace/cancel collision choices, two concurrent sessions maximum, durable chunk offsets, resume on same-file reselect, retry after checksum failure, cancellation, SHA-256 verification/recording, and seven-day cleanup of abandoned partial jobs. Real interruption/restart and large-file validation remains outstanding.
-- **Phase 4:** host address candidates, a local connection panel, a copy-address action, a versioned service handshake endpoint, and a UDP broadcast announcement are implemented. Android has a discovery listener and manual URL fallback. QR fallback, network-interface naming, and real hotspot/multicast validation remain open.
-- **Phase 5:** section navigation, active transfer progress/history filters, cancellation, collision prompts, route summary, live announcements, and local free-space status are present. Upload preflight rejects insufficient disk space. Full screen-reader, keyboard, phone-width and accessibility review remains open.
-- **Phase 6:** an Android Sharesheet project scaffold can pair, verify the phrase, and stream single/multiple `content://` sources without staging copies. Android receive, foreground notifications, provider resume, unknown-size provider handling, and device validation remain open.
+- **Phase 2:** browser and native device identity, session-code pairing, phrase verification, scoped access, rename, trust, revoke, and forget are implemented. The local dashboard QR opens the browser pairing flow. Native-app QR scan/prefill, expiring one-time QR credentials, per-device roots, and real-client revocation validation remain open.
+- **Phase 2 remaining:** device identity and verification work for browser profiles and the Android app; the host can generate a local QR URL for browser pairing. Native app QR scanning/prefill, richer per-device root management, and real-client revocation validation remain open.
+- **Phase 3:** transfer sessions support skip/rename/replace/cancel collision choices, two concurrent sessions maximum, durable chunk offsets, resume on same-file reselect, retry after checksum failure, cancellation, per-chunk SHA-256 re-verification, full-file hash recording, seven-day abandoned-job cleanup, and history for completed/failed sends and receives. Real interruption/restart and large-file validation remains outstanding.
+- **Phase 4:** host address candidates include adapter name, IPv4 address, netmask, and broadcast address when `psutil` can read them. The connection panel copies candidate URLs and generates a local QR for browser pairing; the host broadcasts its actual selected port; Android listens and verifies the protocol handshake before offering an address. Real hotspot/firewall validation remains open.
+- **Phase 5:** section navigation, active transfer progress/history filters, cancellation, collision prompts, route summary, live announcements, local free-space status, and host download history are present. Upload preflight rejects insufficient disk space. Full screen-reader, keyboard, phone-width and accessibility review remains open.
+- **Phase 6:** the Android project registers as a Sharesheet target, offers the system document picker, pairs and verifies the phrase, handles destination collisions, browses the host's approved share, and streams single/multiple `content://` sources or host downloads directly between providers without staging copies. Foreground notifications, provider resume, unknown-size provider handling, partial-download cleanup, and device validation remain open.
 - **Phase 7:** a real-network upload benchmark CLI reports elapsed time, throughput, and client/server SHA-256 in JSON. Benchmarks have not been run; tuning and multi-device/load measurements remain open.
-- **Phase 8:** a Windows PyInstaller build script, stable frozen-app data directory, local storage/connection diagnostics, and release checklist are added. Packaging, firewall, migration, clean install, upgrade, rollback, and uninstall still require Windows validation.
+- **Phase 8:** a Windows PyInstaller build script, stable frozen-app data directory with one-time sidecar DB migration, local storage/connection diagnostics, and release checklist are added. Packaging, firewall, migration, clean install, upgrade, rollback, and uninstall still require Windows validation.
 
 ## Phase 0 decisions and working defaults
 
@@ -71,7 +71,7 @@ These defaults let implementation proceed without blocking on product questions.
 
 - **Initial platforms:** Windows laptop host and Android client; browser UI is a fallback and host manager.
 - **Initial topology:** phone and laptop connect to the same laptop hotspot. Internet is optional and must not be required. QR/manual address is the fallback if local discovery is unavailable.
-- **Initial direction:** Android-to-laptop receive is the first native transfer flow. Laptop-to-phone and direct peer-to-peer are later additions.
+- **Initial direction:** Android-to-laptop send and approved laptop-share-to-Android download work over the host service. Direct device-to-device peer routing is a later addition.
 - **Peer capacity:** design for eight known devices and two concurrent transfers initially; make both configurable after benchmarks.
 - **File size:** target files up to 100 GB, matching the current streaming goal, subject to filesystem free space and Android provider capabilities.
 - **Receive location:** one explicitly selected host receive root. Do not grant arbitrary-drive browsing to remote peers.

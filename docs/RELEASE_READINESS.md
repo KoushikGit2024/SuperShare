@@ -16,6 +16,6 @@ The laptop dashboard reports candidate local IPv4 addresses, service port, proto
 - Confirm UDP broadcast discovery and manual fallback on representative hotspots.
 - Add and verify local TLS before pairing credentials are used outside a trusted private network.
 - Build the Android app, test single/multiple providers, background behavior, low storage, and resume.
-- Benchmark small files, many files, and multi-gigabyte files on hotspot and Wi-Fi; attach result JSON from `tools/benchmark_transfer.py`.
+- Benchmark small files, many files, and multi-gigabyte files on hotspot and Wi-Fi; attach result JSON from `tools/benchmark_transfer.py`. The tool removes its uniquely named output after success unless `--keep-file` is supplied.
 - For a remote benchmark, provide the paired device ID and session cookie; the generated default identity is for a local-host diagnostic run.
 - Verify packaging/data migration, firewall instructions, clean install, upgrade, rollback, and uninstall on Windows.

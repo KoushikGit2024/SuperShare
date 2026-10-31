@@ -6,11 +6,12 @@ SuperShare is a local-network file transfer host for a Windows laptop and connec
 
 The supported server is `run.py` with the aiohttp service in `backend/` and the dashboard in `static/`. The legacy `app.server` import delegates to that same service. Browser clients pair using the session code printed in the host terminal; the host then grants read, send, or both permissions. The host dashboard controls the shared root from the laptop itself.
 
-The browser fallback uploads files to the laptop host. Browser uploads use durable chunk sessions with per-chunk SHA-256 checks, server-side whole-file hashing, resume from acknowledged chunks after reconnecting with the same selected file, collision choices, and cancellation. The Android project registers a Sharesheet target and streams shared content URIs to the host in chunks. Local UDP discovery and manual address fallback are available.
+The browser fallback uploads files to the laptop host. Browser uploads use durable chunk sessions with per-chunk SHA-256 checks, server-side chunk re-verification and whole-file hashing, resume from acknowledged chunks after reconnecting with the same selected file, collision choices, and cancellation. The Android project registers a Sharesheet target, streams shared content URIs to the host, and browses/downloads from the approved host share directly into a document-provider destination. Local UDP discovery and manual address fallback are available.
 
 ## Run
 
 ```powershell
+python -m pip install -r requirements.txt
 python run.py
 ```
 
@@ -25,8 +26,8 @@ The laptop dashboard can choose the active shared root. Remote clients can acces
 ## Current limitations
 
 - Pairing uses a session code and local-network HTTP; it is an initial access-control layer, not protection against a hostile network observer. Use a trusted private hotspot until local HTTPS is implemented.
-- Browser identity is per browser profile. The Android app has its own persisted random device ID. QR pairing is not implemented; use the terminal pairing code and compare the phrase.
-- Android native sending requires a content provider that reports a file size. Android receive, persistent foreground notifications, and restart resume remain open.
+- Browser identity is per browser profile. The Android app has its own persisted random device ID. The laptop dashboard can show a local QR URL for browser pairing; the Android app currently needs the laptop URL and terminal code entered manually.
+- Android native sending requires a content provider that reports a file size. Direct host-push and peer-to-peer sending, persistent foreground notifications, and restart resume remain open; the phone can browse and download from the approved host share.
 - Pairing and transfer still use local HTTP. Use a trusted private network until TLS is implemented.
 - Neither the Android app nor the Windows packaged build has been built or device-validated in this environment.
 

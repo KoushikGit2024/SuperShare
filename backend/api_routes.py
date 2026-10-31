@@ -47,6 +47,30 @@ def _public_transfers(limit=50):
 
 
 def _host_addresses():
+    return [item["address"] for item in _host_interfaces()]
+
+
+def _host_interfaces():
+    interfaces = []
+    try:
+        import psutil
+        for name, entries in psutil.net_if_addrs().items():
+            for entry in entries:
+                if entry.family != socket.AF_INET or not entry.address or entry.address.startswith("127."):
+                    continue
+                try:
+                    iface = ipaddress.IPv4Interface(f"{entry.address}/{entry.netmask or '255.255.255.0'}")
+                except ValueError:
+                    continue
+                interfaces.append({"name": name, "address": entry.address,
+                                   "netmask": entry.netmask or "255.255.255.0",
+                                   "broadcast": entry.broadcast or str(iface.network.broadcast_address)})
+    except Exception:
+        pass
+    unique = {(item["name"], item["address"]): item for item in interfaces}
+    interfaces = list(unique.values())
+    if interfaces:
+        return sorted(interfaces, key=lambda item: (not item["address"].startswith("192.168.137."), item["name"], item["address"]))
     addresses = set()
     try:
         for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
@@ -66,7 +90,8 @@ def _host_addresses():
             probe.close()
     except OSError:
         pass
-    return sorted(addresses, key=lambda address: (not address.startswith("192.168.137."), address))
+    return [{"name": "Detected network", "address": address, "netmask": "", "broadcast": ""}
+            for address in sorted(addresses, key=lambda value: (not value.startswith("192.168.137."), value))]
 
 
 async def network_handler(request: web.Request) -> web.Response:
@@ -75,10 +100,30 @@ async def network_handler(request: web.Request) -> web.Response:
         "protocol_version": 1,
         "port": request.url.port or 80,
         "addresses": _host_addresses(),
+        "interfaces": _host_interfaces(),
         "connection_path": "/",
         "pairing_required": True,
         "internet_required": False,
     })
+
+
+async def pairing_qr_handler(request: web.Request) -> web.Response:
+    _require_host_dashboard(request)
+    interfaces = _host_interfaces()
+    if not interfaces:
+        raise web.HTTPServiceUnavailable(text="No local IPv4 address is available for QR pairing")
+    address = interfaces[0]["address"]
+    port = request.url.port or 80
+    pairing_url = f"http://{address}:{port}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
+    try:
+        import qrcode
+        from qrcode.image.svg import SvgPathImage
+    except ImportError as exc:
+        raise web.HTTPServiceUnavailable(text="QR generation is unavailable. Install project requirements and restart SuperShare.") from exc
+    code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=3)
+    code.add_data(pairing_url)
+    svg = code.make_image(image_factory=SvgPathImage).to_string(encoding="unicode")
+    return web.Response(text=svg, content_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 async def diagnostics_handler(request: web.Request) -> web.Response:
@@ -90,7 +135,7 @@ async def diagnostics_handler(request: web.Request) -> web.Response:
     except OSError as exc:
         storage = {"error": str(exc)}
     return web.json_response({"service": "online", "protocol_version": 1, "port": request.url.port or 80,
-                              "addresses": _host_addresses(), "receive_root": root, "storage": storage,
+                              "addresses": _host_addresses(), "interfaces": _host_interfaces(), "receive_root": root, "storage": storage,
                               "pairing_code_rotates_on_restart": True})
 
 
@@ -399,7 +444,10 @@ async def pick_host_gui_handler(request: web.Request) -> web.Response:
     try:
         selected = await asyncio.to_thread(_open_tk_folder_picker, STATE["share_dir"])
         if selected and os.path.isdir(selected):
-            STATE["share_dir"] = os.path.abspath(selected)
+            updated_root = os.path.abspath(selected)
+            if os.path.realpath(updated_root) != os.path.realpath(STATE["share_dir"]):
+                _cancel_active_transfer_jobs("Receive root changed")
+            STATE["share_dir"] = updated_root
             save_persistent_state()
             print(f"[FOLDER] Active shared folder switched to: {STATE['share_dir']}")
         return web.json_response({"status": "ok", "share_root": STATE["share_dir"]})
@@ -413,7 +461,10 @@ async def set_share_dir_handler(request: web.Request) -> web.Response:
     new_dir = body.get("share_dir", "").strip()
     if not new_dir or not os.path.isdir(new_dir):
         return web.json_response({"status": "error", "message": "Invalid directory path"}, status=400)
-    STATE["share_dir"] = os.path.abspath(new_dir)
+    updated_root = os.path.abspath(new_dir)
+    if os.path.realpath(updated_root) != os.path.realpath(STATE["share_dir"]):
+        _cancel_active_transfer_jobs("Receive root changed")
+    STATE["share_dir"] = updated_root
     save_persistent_state()
     print(f"[FOLDER] Active shared folder switched to: {STATE['share_dir']}")
     return web.json_response({"status": "ok", "share_root": STATE["share_dir"]})
@@ -445,16 +496,34 @@ async def download_handler(request: web.Request) -> web.StreamResponse:
         raise web.HTTPNotFound(text="File not found")
 
     filename = os.path.basename(target)
-    return web.FileResponse(
-        path=target,
-        chunk_size=CHUNK_SIZE,
-        headers={
-            "Content-Disposition": f'attachment; filename="{urllib.parse.quote(filename)}"'
-        }
-    )
+    size = os.path.getsize(target)
+    device_id = request.headers.get("X-SuperShare-Device", "local-dashboard")
+    response = web.StreamResponse(status=200, headers={
+        "Content-Type": "application/octet-stream",
+        "Content-Length": str(size),
+        "Content-Disposition": f'attachment; filename="{urllib.parse.quote(filename)}"',
+    })
+    await response.prepare(request)
+    sent = 0
+    try:
+        with open(target, "rb") as source:
+            while True:
+                chunk = await asyncio.to_thread(source.read, CHUNK_SIZE)
+                if not chunk:
+                    break
+                await response.write(chunk)
+                sent += len(chunk)
+        await response.write_eof()
+        record_transfer(device_id, filename, size, detail="Sent to connected device", destination=device_id, direction="send")
+        return response
+    except Exception as exc:
+        record_transfer(device_id, filename, sent, status="failed", detail=f"Host download interrupted: {str(exc)[:140]}", destination=device_id, direction="send")
+        raise
 
 
 async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filename: str) -> web.StreamResponse:
+    device_id = request.headers.get("X-SuperShare-Device", "local-dashboard")
+    sent = 0
     try:
         zip_size = os.path.getsize(tmp_zip)
         resp = web.StreamResponse(
@@ -472,8 +541,13 @@ async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filenam
                 if not chunk:
                     break
                 await resp.write(chunk)
+                sent += len(chunk)
         await resp.write_eof()
+        record_transfer(device_id, zip_filename, zip_size, detail="Sent ZIP to connected device", destination=device_id, direction="send")
         return resp
+    except Exception as exc:
+        record_transfer(device_id, zip_filename, sent, status="failed", detail=f"ZIP download interrupted: {str(exc)[:140]}", destination=device_id, direction="send")
+        raise
     finally:
         if os.path.exists(tmp_zip):
             try:
@@ -570,6 +644,24 @@ def _authorize_transfer_write(request):
     return device_id
 
 
+def _cancel_active_transfer_jobs(reason):
+    changed = False
+    with STATE["lock"]:
+        for job in STATE.get("transfer_jobs", {}).values():
+            if job.get("status") not in {"queued", "transferring", "interrupted", "verifying"}:
+                continue
+            try:
+                os.remove(job.get("part_path", ""))
+            except OSError:
+                pass
+            job["status"] = "cancelled"
+            job["error"] = reason
+            job["updated_at"] = int(time.time())
+            changed = True
+        if changed:
+            save_persistent_state()
+
+
 async def create_transfer_handler(request: web.Request) -> web.Response:
     device_id = _authorize_transfer_write(request)
     try:
@@ -595,25 +687,37 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
             existing_job = STATE.get("transfer_jobs", {}).get(resume_id)
             if (existing_job and existing_job.get("device_id") == device_id and existing_job.get("size") == size
                     and existing_job.get("destination") == target and existing_job.get("status") in {"queued", "transferring", "interrupted"}):
-                if os.path.exists(existing_job["part_path"]):
-                    with open(existing_job["part_path"], "r+b") as partial:
+                partial_path = existing_job["part_path"]
+                disk_offset = os.path.getsize(partial_path) if os.path.exists(partial_path) else 0
+                if disk_offset < existing_job["offset"]:
+                    existing_job["offset"] = 0
+                    existing_job["chunk_hashes"] = []
+                    with open(partial_path, "wb"):
+                        pass
+                else:
+                    with open(partial_path, "r+b" if os.path.exists(partial_path) else "xb") as partial:
                         partial.truncate(existing_job["offset"])
+                existing_job["share_root"] = os.path.realpath(STATE["share_dir"])
                 existing_job["status"] = "interrupted"
                 existing_job["updated_at"] = int(time.time())
                 save_persistent_state()
-                return web.json_response({"id": resume_id, "offset": existing_job["offset"], "chunk_size": CHUNK_SIZE, "status": "interrupted"})
+                return web.json_response({"id": resume_id, "filename": existing_job["filename"], "offset": existing_job["offset"], "chunk_size": CHUNK_SIZE, "status": "interrupted"})
             if (existing_job and existing_job.get("device_id") == device_id and existing_job.get("size") == size
                     and existing_job.get("destination") == target and existing_job.get("status") == "failed"
                     and not os.path.exists(target) and os.path.exists(existing_job.get("part_path", ""))):
+                active_jobs = [job for job in STATE.get("transfer_jobs", {}).values() if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
+                if len(active_jobs) >= MAX_CONCURRENT_TRANSFERS or sum(job.get("device_id") == device_id for job in active_jobs) >= MAX_CONCURRENT_TRANSFERS:
+                    raise web.HTTPTooManyRequests(text=f"Transfer limit reached ({MAX_CONCURRENT_TRANSFERS} active jobs). Wait for one to finish.")
                 with open(existing_job["part_path"], "r+b") as partial:
                     partial.truncate(0)
                 existing_job["offset"] = 0
                 existing_job["chunk_hashes"] = []
+                existing_job["share_root"] = os.path.realpath(STATE["share_dir"])
                 existing_job["status"] = "queued"
                 existing_job["updated_at"] = int(time.time())
                 existing_job.pop("error", None)
                 save_persistent_state()
-                return web.json_response({"id": resume_id, "offset": 0, "chunk_size": CHUNK_SIZE, "status": "queued"})
+                return web.json_response({"id": resume_id, "filename": existing_job["filename"], "offset": 0, "chunk_size": CHUNK_SIZE, "status": "queued"})
     if collision not in {"ask", "skip", "rename", "replace"}:
         raise web.HTTPBadRequest(text="Collision choice must be ask, skip, rename, or replace")
     if os.path.exists(target):
@@ -627,23 +731,23 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
             while os.path.exists(f"{stem} ({suffix}){extension}"):
                 suffix += 1
             target = f"{stem} ({suffix}){extension}"
-    with STATE["lock"]:
-        active_jobs = [job for job in STATE.get("transfer_jobs", {}).values() if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
-        if len(active_jobs) >= MAX_CONCURRENT_TRANSFERS or sum(job.get("device_id") == device_id for job in active_jobs) >= MAX_CONCURRENT_TRANSFERS:
-            raise web.HTTPTooManyRequests(text=f"Transfer limit reached ({MAX_CONCURRENT_TRANSFERS} active jobs). Wait for one to finish.")
     job_id = uuid.uuid4().hex
     part_path = os.path.join(os.path.dirname(target), f".supershare-{job_id}.partial")
     job = {"id": job_id, "device_id": device_id, "filename": os.path.basename(target),
            "destination": target, "part_path": part_path, "size": size, "offset": 0,
+           "share_root": os.path.realpath(STATE["share_dir"]),
            "collision": collision,
            "status": "queued", "created_at": int(time.time()), "updated_at": int(time.time()),
            "chunk_hashes": []}
-    if size == 0:
-        open(part_path, "xb").close()
     with STATE["lock"]:
+        active_jobs = [job for job in STATE.get("transfer_jobs", {}).values() if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
+        if len(active_jobs) >= MAX_CONCURRENT_TRANSFERS or sum(job.get("device_id") == device_id for job in active_jobs) >= MAX_CONCURRENT_TRANSFERS:
+            raise web.HTTPTooManyRequests(text=f"Transfer limit reached ({MAX_CONCURRENT_TRANSFERS} active jobs). Wait for one to finish.")
+        if size == 0:
+            open(part_path, "xb").close()
         STATE.setdefault("transfer_jobs", {})[job_id] = job
-    save_persistent_state()
-    return web.json_response({"id": job_id, "offset": 0, "chunk_size": CHUNK_SIZE, "status": job["status"]}, status=201)
+        save_persistent_state()
+    return web.json_response({"id": job_id, "filename": job["filename"], "offset": 0, "chunk_size": CHUNK_SIZE, "status": job["status"]}, status=201)
 
 
 def _get_transfer_job(request, job_id):
@@ -673,8 +777,9 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
             raise web.HTTPConflict(text=f"Transfer is {job['status']}")
         if offset != job["offset"]:
             return web.json_response({"error": "offset_mismatch", "expected_offset": job["offset"]}, status=409)
-        if offset + len(chunk) > job["size"]:
-            raise web.HTTPBadRequest(text="Chunk exceeds the declared file size")
+        expected_length = min(CHUNK_SIZE, max(0, job["size"] - offset))
+        if len(chunk) != expected_length:
+            raise web.HTTPBadRequest(text=f"Chunk must contain exactly {expected_length} bytes at this offset")
         with open(job["part_path"], "ab" if offset else "wb") as output:
             output.write(chunk)
             output.flush()
@@ -694,6 +799,10 @@ async def transfer_status_handler(request: web.Request) -> web.Response:
 
 async def complete_transfer_handler(request: web.Request) -> web.Response:
     job = _get_transfer_job(request, request.match_info["job_id"])
+    body = await request.json()
+    expected = str(body.get("sha256", "")).lower()
+    if expected and not re.fullmatch(r"[a-f0-9]{64}", expected):
+        raise web.HTTPBadRequest(text="Invalid SHA-256 checksum")
     with STATE["lock"]:
         if job["offset"] != job["size"]:
             raise web.HTTPConflict(text="Transfer is incomplete; resume from the acknowledged offset")
@@ -702,39 +811,80 @@ async def complete_transfer_handler(request: web.Request) -> web.Response:
         job["status"] = "verifying"
         job["updated_at"] = int(time.time())
         save_persistent_state()
-    body = await request.json()
-    expected = str(body.get("sha256", "")).lower()
-    if expected and not re.fullmatch(r"[a-f0-9]{64}", expected):
-        raise web.HTTPBadRequest(text="Invalid SHA-256 checksum")
     digest = hashlib.sha256()
     with open(job["part_path"], "rb") as source:
+        if os.path.getsize(job["part_path"]) != job["size"]:
+            job["status"] = "failed"
+            job["error"] = "Partial file size does not match the declared transfer size"
+            job["updated_at"] = int(time.time())
+            save_persistent_state()
+            raise web.HTTPUnprocessableEntity(text=job["error"])
+        chunk_index = 0
         while True:
             chunk = await asyncio.to_thread(source.read, CHUNK_SIZE)
             if not chunk:
                 break
+            if chunk_index >= len(job.get("chunk_hashes", [])) or not hmac.compare_digest(
+                    hashlib.sha256(chunk).hexdigest(), job["chunk_hashes"][chunk_index]):
+                job["status"] = "failed"
+                job["error"] = f"Stored chunk {chunk_index + 1} failed SHA-256 verification"
+                job["updated_at"] = int(time.time())
+                save_persistent_state()
+                raise web.HTTPUnprocessableEntity(text=job["error"])
             digest.update(chunk)
+            chunk_index += 1
+        if chunk_index != len(job.get("chunk_hashes", [])):
+            job["status"] = "failed"
+            job["error"] = "Stored chunk count does not match the transfer checkpoint"
+            job["updated_at"] = int(time.time())
+            save_persistent_state()
+            raise web.HTTPUnprocessableEntity(text=job["error"])
     actual_digest = digest.hexdigest()
-    if expected and not hmac.compare_digest(actual_digest, expected):
-        job["status"] = "failed"
-        job["error"] = "SHA-256 checksum mismatch"
+    with STATE["lock"]:
+        if job["status"] != "verifying":
+            try:
+                os.remove(job["part_path"])
+            except OSError:
+                pass
+            raise web.HTTPConflict(text=f"Transfer was {job['status']} before it could be published")
+        if os.path.realpath(STATE["share_dir"]) != job.get("share_root"):
+            job["status"] = "cancelled"
+            job["error"] = "Receive root changed"
+            try:
+                os.remove(job["part_path"])
+            except OSError:
+                pass
+            save_persistent_state()
+            raise web.HTTPConflict(text="Receive root changed; transfer was cancelled")
+        if expected and not hmac.compare_digest(actual_digest, expected):
+            job["status"] = "failed"
+            job["error"] = "SHA-256 checksum mismatch"
+            job["updated_at"] = int(time.time())
+            save_persistent_state()
+            raise web.HTTPUnprocessableEntity(text="SHA-256 checksum mismatch; retry this transfer")
+        if os.path.exists(job["destination"]) and job.get("collision") != "replace":
+            job["status"] = "failed"
+            job["error"] = "Destination already exists"
+            save_persistent_state()
+            raise web.HTTPConflict(text="A file already exists at this destination")
+        try:
+            if job.get("collision") == "replace":
+                os.replace(job["part_path"], job["destination"])
+            else:
+                os.link(job["part_path"], job["destination"])
+        except FileExistsError as exc:
+            job["status"] = "failed"
+            job["error"] = "Destination already exists"
+            job["updated_at"] = int(time.time())
+            save_persistent_state()
+            raise web.HTTPConflict(text="A file already exists at this destination") from exc
+        if os.path.exists(job["part_path"]):
+            os.remove(job["part_path"])
+        job["status"] = "completed"
+        job["sha256"] = actual_digest
         job["updated_at"] = int(time.time())
         save_persistent_state()
-        raise web.HTTPUnprocessableEntity(text="SHA-256 checksum mismatch; retry this transfer")
-    if os.path.exists(job["destination"]) and job.get("collision") != "replace":
-        job["status"] = "failed"
-        job["error"] = "Destination already exists"
-        save_persistent_state()
-        raise web.HTTPConflict(text="A file already exists at this destination")
-    if job.get("collision") == "replace":
-        os.replace(job["part_path"], job["destination"])
-    else:
-        os.link(job["part_path"], job["destination"])
-    os.remove(job["part_path"])
-    job["status"] = "completed"
-    job["sha256"] = actual_digest
-    job["updated_at"] = int(time.time())
     record_transfer(job["device_id"], job["filename"], job["size"], detail=f"SHA-256 {actual_digest}", destination=job["destination"])
-    save_persistent_state()
     return web.json_response({"status": "completed", "sha256": actual_digest})
 
 
