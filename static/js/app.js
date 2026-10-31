@@ -193,9 +193,19 @@ function renderTransfers(transfers) {
     const li = document.createElement("li"); li.className = "transfer-row";
     const device = (window._lastDevices || []).find(item => item.id === t.device_id);
     const name = document.createElement("strong"); name.textContent = t.filename;
-    const detail = document.createElement("span"); detail.textContent = `From ${device?.name || "Browser device"} to ${t.destination || "shared folder"} · ${formatBytes(t.size || 0)} · ${new Date(t.timestamp * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
+    const progressText = t.offset != null ? ` · ${formatBytes(t.offset)} of ${formatBytes(t.size || 0)}` : "";
+    const detail = document.createElement("span"); detail.textContent = `From ${device?.name || "Browser device"} to ${t.destination || "shared folder"} · ${formatBytes(t.size || 0)}${progressText} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
     const status = document.createElement("span"); status.className = `transfer-state ${t.status}`; status.textContent = t.status;
     li.append(name, detail, status);
+    if (["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
+      const cancel = document.createElement("button"); cancel.className = "btn-xs outline"; cancel.textContent = "Cancel";
+      cancel.onclick = async () => {
+        if (!confirm(`Cancel transfer of ${t.filename}? Its partial file will be removed.`)) return;
+        const response = await fetch(`/api/transfers/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
+        if (!response.ok) showNotice(await responseError(response), "error"); else refreshDevices();
+      };
+      li.appendChild(cancel);
+    }
     if (t.status === "failed") {
       const retry = document.createElement("button"); retry.className = "btn-xs outline"; retry.textContent = "Choose file to retry";
       retry.title = "The browser cannot retain access to the original file after the transfer ends. Select it again to retry.";
@@ -372,19 +382,34 @@ async function uploadFiles(files, retryName = null) {
       name.textContent = `Uploading ${index + 1} of ${files.length}: ${relative}`;
       bar.style.width = "0%"; percent.textContent = "0%"; speed.textContent = "Starting";
       await new Promise((resolve, reject) => {
-        const request = new XMLHttpRequest(); const start = Date.now();
-        request.open("POST", "/api/upload", true);
-        request.setRequestHeader("X-File-Path", encodeURIComponent(destination));
-        Object.entries(deviceHeaders()).forEach(([key, value]) => request.setRequestHeader(key, value));
-        request.upload.onprogress = event => {
-          if (!event.lengthComputable) return;
-          const progress = Math.round(event.loaded / event.total * 100);
-          bar.style.width = `${progress}%`; percent.textContent = `${progress}%`;
-          const seconds = (Date.now() - start) / 1000; if (seconds > 0) speed.textContent = `${formatBytes(event.loaded / seconds)}/s · ${formatBytes(event.loaded)} of ${formatBytes(event.total)}`;
-        };
-        request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(new Error(request.responseText || `Upload failed (${request.status})`));
-        request.onerror = () => reject(new Error("Network error while uploading"));
-        request.send(file);
+        (async () => {
+          const start = Date.now();
+          const headers = { "Content-Type": "application/json", ...deviceHeaders() };
+          const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
+          const resumeId = localStorage.getItem(resumeKey) || "";
+          const created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId }) });
+          if (!created.ok) throw new Error(await responseError(created));
+          const session = await created.json();
+          localStorage.setItem(resumeKey, session.id);
+          let offset = session.offset || 0;
+          const chunkSize = session.chunk_size;
+          while (offset < file.size) {
+            const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
+            const chunkHash = await crypto.subtle.digest("SHA-256", await chunk.arrayBuffer());
+            const chunkChecksum = [...new Uint8Array(chunkHash)].map(value => value.toString(16).padStart(2, "0")).join("");
+            const response = await fetch(`/api/transfers/${session.id}/chunk`, { method: "PUT", headers: { ...deviceHeaders(), "X-Chunk-Offset": String(offset), "X-Chunk-SHA256": chunkChecksum }, credentials: "same-origin", body: chunk });
+            if (!response.ok) throw new Error(await responseError(response));
+            const result = await response.json(); offset = result.offset;
+            const progress = file.size ? Math.round(offset / file.size * 100) : 100;
+            bar.style.width = `${progress}%`; percent.textContent = `${progress}%`;
+            const seconds = (Date.now() - start) / 1000;
+            speed.textContent = `${formatBytes(offset / Math.max(seconds, 0.001))}/s · ${formatBytes(offset)} of ${formatBytes(file.size)}`;
+          }
+          const completed = await fetch(`/api/transfers/${session.id}/complete`, { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({}) });
+          if (!completed.ok) throw new Error(await responseError(completed));
+          localStorage.removeItem(resumeKey);
+          resolve();
+        })().catch(reject);
       });
     }
     name.textContent = `Completed ${files.length} file${files.length === 1 ? "" : "s"}`; percent.textContent = "100%"; bar.style.width = "100%";

@@ -83,6 +83,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/zip-selected", zip_selected_handler)
 
     app.router.add_post("/api/upload", upload_handler)
+    app.router.add_post("/api/transfers", create_transfer_handler)
+    app.router.add_put("/api/transfers/{job_id}/chunk", transfer_chunk_handler)
+    app.router.add_get("/api/transfers/{job_id}", transfer_status_handler)
+    app.router.add_post("/api/transfers/{job_id}/complete", complete_transfer_handler)
+    app.router.add_post("/api/transfers/{job_id}/cancel", cancel_transfer_handler)
     app.router.add_post("/api/mkdir", mkdir_handler)
     app.router.add_post("/api/delete-selected", delete_selected_handler)
     app.router.add_post("/api/set-share-dir", set_share_dir_handler)

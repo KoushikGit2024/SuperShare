@@ -6,7 +6,7 @@ SuperShare is a local-network file transfer host for a Windows laptop and connec
 
 The supported server is `run.py` with the aiohttp service in `backend/` and the dashboard in `static/`. The legacy `app.server` import delegates to that same service. Browser clients pair using the session code printed in the host terminal; the host then grants read, send, or both permissions. The host dashboard controls the shared root from the laptop itself.
 
-The browser fallback uploads files to the laptop host. It does not yet send to a chosen peer or register as Android's system share target. Android native sharing, automatic discovery, resumable transfers, and transfer cancellation remain planned work.
+The browser fallback uploads files to the laptop host. It does not yet send to a chosen peer or register as Android's system share target. Browser uploads use durable chunk sessions with per-chunk SHA-256 checks, server-side whole-file hashing, resume from acknowledged chunks after reconnecting with the same selected file, and explicit cancellation through the transfer API. Native Android sharing and automatic discovery remain planned work.
 
 ## Run
 
@@ -26,5 +26,5 @@ The laptop dashboard can choose the active shared root. Remote clients can acces
 
 - Pairing uses a session code and local-network HTTP; it is an initial access-control layer, not protection against a hostile network observer. Use a trusted private hotspot until local HTTPS is implemented.
 - Browser identity is per browser profile. Native device identity and QR verification are planned.
-- Transfers are not yet resumable or cancellable.
+- A browser can resume an interrupted upload by selecting the same file again in the same browser profile. Cancelling is currently available through the API and will get a dashboard control in the transfer-management phase.
 - The full host receive flow is browser-based. Direct Android Share-menu integration requires the planned native Android app.

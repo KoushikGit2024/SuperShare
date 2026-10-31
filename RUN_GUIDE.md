@@ -30,4 +30,4 @@ SuperShare does not automatically change Windows network profiles or firewall ru
 
 ## Known limitations
 
-The browser interface sends files to the laptop host. Native Android system-share integration, direct peer-to-peer sending, automatic discovery, resumable transfers, and cancellation are planned but not yet available. Pairing currently uses local-network HTTP, so use a trusted private network.
+The browser interface sends files to the laptop host. Interrupted uploads can resume from acknowledged chunks by selecting the same file again in the same browser profile. Native Android system-share integration, direct peer-to-peer sending, and automatic discovery remain planned. Pairing currently uses local-network HTTP, so use a trusted private network.

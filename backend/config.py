@@ -40,6 +40,7 @@ def _connect_database():
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute("CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
     connection.execute("CREATE TABLE IF NOT EXISTS transfers (id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL, data TEXT NOT NULL)")
+    connection.execute("CREATE TABLE IF NOT EXISTS transfer_jobs (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, data TEXT NOT NULL)")
     connection.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
     return connection
 
@@ -53,6 +54,12 @@ def load_persistent_state():
         STATE["devices"].update({device_id: json.loads(data) for device_id, data in rows})
         rows = connection.execute("SELECT data FROM transfers ORDER BY timestamp DESC LIMIT 200").fetchall()
         STATE["transfers"].extend(json.loads(row[0]) for row in reversed(rows))
+        jobs = connection.execute("SELECT id, data FROM transfer_jobs").fetchall()
+        STATE["transfer_jobs"] = {job_id: json.loads(data) for job_id, data in jobs}
+        # A process restart interrupts active work; retain its checkpoint for resume.
+        for job in STATE["transfer_jobs"].values():
+            if job.get("status") in {"queued", "transferring", "verifying"}:
+                job["status"] = "interrupted"
         if rows or STATE["devices"]:
             return
         try:
@@ -84,6 +91,16 @@ def save_persistent_state():
                 [(entry["id"], entry["timestamp"], json.dumps(entry, ensure_ascii=False)) for entry in transfers],
             )
             connection.execute("DELETE FROM transfers WHERE id NOT IN (SELECT id FROM transfers ORDER BY timestamp DESC LIMIT 200)")
+            jobs = list(STATE.get("transfer_jobs", {}).items())
+            connection.executemany(
+                "INSERT INTO transfer_jobs(id, updated_at, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
+                [(job_id, int(job.get("updated_at", time.time())), json.dumps(job, ensure_ascii=False)) for job_id, job in jobs],
+            )
+            if jobs:
+                placeholders = ",".join("?" for _ in jobs)
+                connection.execute(f"DELETE FROM transfer_jobs WHERE id NOT IN ({placeholders})", [job_id for job_id, _ in jobs])
+            else:
+                connection.execute("DELETE FROM transfer_jobs")
             connection.execute(
                 "INSERT INTO settings(key, value) VALUES('share_dir', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (STATE["share_dir"],),
