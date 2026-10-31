@@ -104,7 +104,7 @@ def main():
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--gui", action="store_true")
-    parser.add_argument("--https", action="store_true", help="Enable local TLS; pin the printed CA fingerprint on native clients")
+    parser.add_argument("--https", action="store_true", help="Enable local TLS; trust the printed local CA in browser clients")
     args = parser.parse_args()
 
     active_port = args.port

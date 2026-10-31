@@ -12,10 +12,10 @@ The laptop dashboard reports candidate local IPv4 addresses, service port, proto
 
 ## Release gates still open
 
-- Validate Windows hotspot and Android client behavior with internet/mobile data disabled.
-- Confirm UDP broadcast discovery and manual fallback on representative hotspots.
-- Exercise the optional local TLS mode on a clean Windows host and Android device, including certificate regeneration and fingerprint mismatch rejection.
-- Build the Android app, test single/multiple providers, background behavior, low storage, and resume.
+- Validate browser clients on Windows, Android, and iOS over a hotspot with internet/mobile data disabled.
+- Validate QR/manual URL onboarding on representative hotspots; browser-only clients cannot consume the host UDP discovery beacon.
+- Exercise the optional local TLS mode on a clean Windows host and browser clients, including certificate regeneration and trust failures.
+- Test file and folder selection, drag-and-drop, paste, multiple files, background tab behavior, low storage, and resume across supported browsers.
 - Benchmark small files, many files, and multi-gigabyte files on hotspot and Wi-Fi; attach result JSON from `tools/benchmark_transfer.py`. The tool removes its uniquely named output after success unless `--keep-file` is supplied.
 - For a remote benchmark, provide the paired device ID and session cookie; the generated default identity is for a local-host diagnostic run.
 - Verify packaging/data migration, firewall instructions, clean install, upgrade, rollback, and uninstall on Windows.

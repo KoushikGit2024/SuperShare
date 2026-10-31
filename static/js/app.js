@@ -72,7 +72,7 @@ async function refreshNetworkInfo() {
     networkTlsEnabled = secure;
     security.classList.toggle("secure", secure);
     security.textContent = secure
-      ? `HTTPS enabled · CA SHA-256: ${info.ca_fingerprint || "fingerprint unavailable"}. Verify it on native clients and trust the local CA for browsers.`
+      ? `HTTPS enabled · CA SHA-256: ${info.ca_fingerprint || "fingerprint unavailable"}. Trust the local CA in each browser before connecting.`
       : "HTTP mode · pairing codes and file data are unencrypted on the local network. Use only a trusted private hotspot or restart with --https.";
     let extra = "";
     if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
