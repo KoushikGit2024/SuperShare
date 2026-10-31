@@ -23,5 +23,7 @@ The laptop dashboard reports candidate local IPv4 addresses, service port, proto
 ## Validation completed in this workspace
 
 - A loopback end-to-end upload through the running aiohttp server succeeded for a 3,579-byte README. Client and server SHA-256 values matched, and the benchmark removed the generated destination file. This is a local smoke check only; its throughput is not a performance result.
+- After bounded chunk reads and storage reservation changes, a 4,325,376-byte loopback upload crossed the 4 MiB chunk boundary successfully. Client/server SHA-256 matched and the generated destination was removed. This checks local chunk handling, not hotspot or Wi-Fi throughput.
+- Repeated after local-dashboard request hardening: a 4,325,376-byte loopback upload succeeded with matching SHA-256 (`bdeb40b8593f6548818afbe9d55b473ebf371e7d430ce0ee37cc1e89a234c69b`) and destination cleanup. Measured loopback throughput was about 19.2 MB/s and is not a network performance claim.
 - Python source parsing, JavaScript syntax checking, and `git diff --check` passed during the documentation update.
 - No physical phone, hotspot, mobile browser, or cross-device network was exercised here. The browser/network release gates above remain open.

@@ -139,7 +139,9 @@ async function refreshNetworkInfo() {
       const diagnosticResponse = await fetch("/api/diagnostics", { cache: "no-store" });
       if (diagnosticResponse.ok) {
         const diagnostic = await diagnosticResponse.json();
-        extra = diagnostic.storage?.available_bytes != null ? ` · ${formatBytes(diagnostic.storage.available_bytes)} free on receive drive` : "";
+        extra = diagnostic.storage?.available_bytes != null
+          ? ` · ${formatBytes(diagnostic.storage.available_bytes)} free on receive drive${diagnostic.storage.reserved_bytes ? ` · ${formatBytes(diagnostic.storage.reserved_bytes)} reserved for active transfers` : ""}`
+          : "";
       }
     }
     status.textContent = `Service reachable · TCP ${info.port} · Pairing required · Internet not required${extra}`;
@@ -314,7 +316,7 @@ async function refreshDevices() {
           updateAccess("Read only", { read: true, write: false });
           updateAccess("Send only", { read: false, write: true });
           const revoke = document.createElement("button"); revoke.className = "btn-xs outline"; revoke.textContent = "Revoke access";
-          revoke.onclick = async () => { if (await confirmAction("Revoke browser access?", `This removes ${device.name}'s current access. The browser will need approval again.`, true) && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); };
+          revoke.onclick = async () => { if (await confirmAction("Revoke browser access?", `This invalidates ${device.name}'s saved pairing credential and cancels its active uploads. The browser must pair again before it can be approved.`, true) && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); };
           controls.appendChild(revoke);
         }
         const forget = document.createElement("button"); forget.className = "btn-xs outline"; forget.textContent = "Forget";
@@ -381,7 +383,7 @@ function renderTransfers(transfers) {
       li.appendChild(progress);
     }
     if (["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
-      const cancel = document.createElement("button"); cancel.className = "btn-xs outline"; cancel.textContent = "Cancel";
+      const cancel = document.createElement("button"); cancel.className = "btn-xs outline"; cancel.textContent = t.status === "verifying" ? "Stop verification" : "Cancel";
       cancel.onclick = async () => {
         if (!await confirmAction("Cancel this transfer?", `Cancel ${t.filename} and remove its partial file from the host?`, true)) return;
         const response = await fetch(`/api/transfers/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
@@ -589,7 +591,7 @@ document.getElementById("selectThisHostFolderBtn").onclick = async () => {
   else showNotice(await responseError(response), "error");
 };
 document.getElementById("nativePickerBtn").onclick = async () => {
-  try { const response = await fetch("/api/pick-host-gui"); if (!response.ok) throw new Error(await responseError(response)); await fetchDirectory(""); }
+  try { const response = await fetch("/api/pick-host-gui", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) throw new Error(await responseError(response)); await fetchDirectory(""); }
   catch (error) { showNotice(error.message, "error"); }
 };
 document.getElementById("selectAllCheckbox").onchange = event => {

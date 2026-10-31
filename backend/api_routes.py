@@ -3,6 +3,7 @@ api_routes.py — aiohttp REST and streaming endpoints for SuperShare.
 """
 import os
 import json
+import errno
 import asyncio
 import urllib.parse
 import re
@@ -133,7 +134,12 @@ async def diagnostics_handler(request: web.Request) -> web.Response:
     root = STATE["share_dir"]
     try:
         usage = shutil.disk_usage(root)
-        storage = {"available_bytes": usage.free, "total_bytes": usage.total}
+        with STATE["lock"]:
+            active_jobs = [job for job in STATE.get("transfer_jobs", {}).values()
+                           if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
+            reserved_bytes = sum(max(0, job.get("size", 0) - job.get("offset", 0)) for job in active_jobs)
+        storage = {"available_bytes": usage.free, "reserved_bytes": reserved_bytes,
+                   "active_transfer_count": len(active_jobs), "total_bytes": usage.total}
     except OSError as exc:
         storage = {"error": str(exc)}
     return web.json_response({"service": "online", "protocol_version": 1, "port": request.url.port or 80,
@@ -244,7 +250,8 @@ async def pair_device_handler(request: web.Request) -> web.Response:
     save_persistent_state()
     _device_persisted_at[device_id] = time.monotonic()
     response = web.json_response({"status": "paired", "device_id": device_id, "verification_phrase": phrase})
-    response.set_cookie("supershare_token", token, httponly=True, samesite="Strict", path="/api", max_age=31536000)
+    response.set_cookie("supershare_token", token, httponly=True, secure=request.scheme == "https",
+                        samesite="Strict", path="/api", max_age=31536000)
     return response
 
 
@@ -307,8 +314,25 @@ def _public_devices():
 
 def _is_local_host_request(request):
     try:
-        return ipaddress.ip_address(request.remote or "").is_loopback
-    except ValueError:
+        if not ipaddress.ip_address(request.remote or "").is_loopback:
+            return False
+        request_host = urllib.parse.urlsplit(f"//{request.host}").hostname
+        if request_host not in {"localhost", "127.0.0.1", "::1"}:
+            return False
+        fetch_site = request.headers.get("Sec-Fetch-Site", "").lower()
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            return False
+        origin = request.headers.get("Origin")
+        if origin:
+            parsed_origin = urllib.parse.urlsplit(origin)
+            if parsed_origin.scheme != request.scheme or parsed_origin.netloc.lower() != request.host.lower():
+                return False
+        elif request.headers.get("Referer") and fetch_site != "same-origin":
+            referer = urllib.parse.urlsplit(request.headers["Referer"])
+            if referer.scheme != request.scheme or referer.netloc.lower() != request.host.lower():
+                return False
+        return True
+    except (ValueError, TypeError):
         return False
 
 
@@ -368,6 +392,7 @@ async def forget_device_handler(request: web.Request) -> web.Response:
     body = await request.json()
     with STATE["lock"]:
         STATE["devices"].pop(body.get("id", ""), None)
+    _cancel_device_transfer_jobs(body.get("id", ""), "Browser profile was forgotten")
     save_persistent_state()
     return web.json_response({"status": "ok"})
 
@@ -382,6 +407,10 @@ async def revoke_device_handler(request: web.Request) -> web.Response:
         device["trusted"] = False
         device["approved_until"] = 0
         device["permissions"] = {"read": False, "write": False}
+        device["token_hash"] = ""
+        device["pair_confirmed"] = False
+        device["verification_phrase"] = ""
+    _cancel_device_transfer_jobs(body.get("id", ""), "Browser access was revoked")
     save_persistent_state()
     return web.json_response({"status": "ok"})
 
@@ -446,6 +475,7 @@ def _open_tk_folder_picker(initial_dir: str) -> str:
 
 async def pick_host_gui_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
+    await request.json()
     try:
         selected = await asyncio.to_thread(_open_tk_folder_picker, STATE["share_dir"])
         if selected and os.path.isdir(selected):
@@ -576,77 +606,33 @@ async def zip_selected_handler(request: web.Request) -> web.StreamResponse:
     return await _stream_and_remove_zip(request, tmp_zip, zip_filename)
 
 
-async def upload_handler(request: web.Request) -> web.Response:
-    raw_rel = request.headers.get("X-File-Path", "uploaded_file.bin")
-    rel_path = urllib.parse.unquote(raw_rel)
-    device_id = request.headers.get("X-SuperShare-Device", "").strip()
-    if not device_id or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
-        raise web.HTTPForbidden(text="A registered device identity is required")
-    local_request = _is_local_host_request(request)
-    with STATE["lock"]:
-        existing = STATE["devices"].get(device_id, {})
-        paired = local_request or _authenticated_device(request, existing)
-    if existing.get("token_hash") and not paired:
-        raise web.HTTPForbidden(text="This request does not match the paired device")
-    _touch_device(device_id, request.headers.get("X-SuperShare-Name", "Unknown device"),
-                  request.headers.get("X-SuperShare-Type", "Device"), request.remote)
-    with STATE["lock"]:
-        device = STATE["devices"].get(device_id, {})
-        paired = local_request or _authenticated_device(request, device)
-        approved = local_request or (paired and (device.get("trusted", False) or device.get("approved_until", 0) > int(time.time())))
-        write_allowed = local_request or device.get("permissions", {}).get("write", False)
-    if not paired:
-        raise web.HTTPForbidden(text="Pair this device with the host before uploading")
-    if not approved or not write_allowed:
-        raise web.HTTPForbidden(text="This device needs host send permission before uploading")
-
-    target = safe_join(STATE["share_dir"], rel_path)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    if os.path.exists(target):
-        record_transfer(device_id, os.path.basename(target), 0, "failed", "Destination already exists", target)
-        raise web.HTTPConflict(text="A file already exists at this destination")
-    temp_path = os.path.join(os.path.dirname(target), f".supershare-{uuid.uuid4().hex}.partial")
-    print(f"[UPLOAD] Receiving -> {rel_path}")
-    received = 0
-    try:
-        with open(temp_path, "xb") as f:
-            async for chunk in request.content.iter_chunked(CHUNK_SIZE):
-                await asyncio.to_thread(f.write, chunk)
-                received += len(chunk)
-            await asyncio.to_thread(f.flush)
-            await asyncio.to_thread(os.fsync, f.fileno())
-        # A hard-link publication fails atomically if a competing upload created
-        # the final name; this preserves the existing file without overwrite.
-        await asyncio.to_thread(os.link, temp_path, target)
-        os.remove(temp_path)
-    except Exception as exc:
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
-        record_transfer(device_id, os.path.basename(target), received, "failed", str(exc)[:200], target)
-        if isinstance(exc, FileExistsError):
-            raise web.HTTPConflict(text="A file already exists at this destination") from exc
-        raise
-    print(f"[SAVED]  {target}")
-    record_transfer(device_id, os.path.basename(target), received, destination=target)
-    return web.json_response({"status": "ok", "bytes": received})
-
-
 def _authorize_transfer_write(request):
     device_id = request.headers.get("X-SuperShare-Device", "").strip()
     local_request = _is_local_host_request(request)
     with STATE["lock"]:
         device = STATE["devices"].get(device_id, {})
+        authenticated = _authenticated_device(request, device)
         allowed = local_request or (
-            _authenticated_device(request, device)
+            authenticated
             and (device.get("trusted") or device.get("approved_until", 0) > int(time.time()))
             and device.get("permissions", {}).get("write", False)
         )
     if not allowed:
+        if authenticated:
+            _cancel_device_transfer_jobs(device_id, "Send access was revoked or expired")
         raise web.HTTPForbidden(text="This device needs host send permission before uploading")
     return device_id
+
+
+def _available_transfer_space(exclude_job_id=None, existing_allocation=0):
+    free_bytes = shutil.disk_usage(STATE["share_dir"]).free
+    with STATE["lock"]:
+        reserved = sum(
+            max(0, int(job.get("size", 0)) - int(job.get("offset", 0)))
+            for job_id, job in STATE.get("transfer_jobs", {}).items()
+            if job_id != exclude_job_id and job.get("status") in {"queued", "transferring", "interrupted", "verifying"}
+        )
+    return max(0, free_bytes + max(0, existing_allocation) - reserved)
 
 
 def _cancel_active_transfer_jobs(reason):
@@ -667,6 +653,24 @@ def _cancel_active_transfer_jobs(reason):
             save_persistent_state()
 
 
+def _cancel_device_transfer_jobs(device_id, reason):
+    changed = False
+    with STATE["lock"]:
+        for job in STATE.get("transfer_jobs", {}).values():
+            if job.get("device_id") != device_id or job.get("status") not in {"queued", "transferring", "interrupted", "verifying"}:
+                continue
+            try:
+                os.remove(job.get("part_path", ""))
+            except OSError:
+                pass
+            job["status"] = "cancelled"
+            job["error"] = reason
+            job["updated_at"] = int(time.time())
+            changed = True
+    if changed:
+        save_persistent_state()
+
+
 async def create_transfer_handler(request: web.Request) -> web.Response:
     device_id = _authorize_transfer_write(request)
     try:
@@ -680,11 +684,13 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="Invalid transfer details")
     if not name or size < 0 or size > 100 * 1024**3:
         raise web.HTTPBadRequest(text="A filename and size up to 100 GB are required")
-    try:
-        if shutil.disk_usage(STATE["share_dir"]).free < size:
-            raise web.HTTPInsufficientStorage(text="Not enough free space on the selected receive drive")
-    except OSError:
-        raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
+    if not resume_id:
+        try:
+            with STATE["lock"]:
+                if size > _available_transfer_space():
+                    raise web.HTTPInsufficientStorage(text="Not enough unreserved space on the selected receive drive")
+        except OSError:
+            raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
     target = safe_join(STATE["share_dir"], destination)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     if resume_id:
@@ -707,6 +713,12 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
                     with open(partial_path, "r+b" if os.path.exists(partial_path) else "xb") as partial:
                         partial.truncate(existing_job["offset"])
                 existing_job["share_root"] = os.path.realpath(STATE["share_dir"])
+                try:
+                    available = _available_transfer_space(exclude_job_id=resume_id, existing_allocation=existing_job["offset"])
+                    if size > available:
+                        raise web.HTTPInsufficientStorage(text="Not enough unreserved space to resume this transfer")
+                except OSError:
+                    raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
                 existing_job["status"] = "interrupted"
                 existing_job["updated_at"] = int(time.time())
                 save_persistent_state()
@@ -722,6 +734,12 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
                 existing_job["offset"] = 0
                 existing_job["chunk_hashes"] = []
                 existing_job["share_root"] = os.path.realpath(STATE["share_dir"])
+                try:
+                    available = _available_transfer_space(exclude_job_id=resume_id)
+                    if size > available:
+                        raise web.HTTPInsufficientStorage(text="Not enough unreserved space to restart this transfer")
+                except OSError:
+                    raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
                 existing_job["status"] = "queued"
                 existing_job["updated_at"] = int(time.time())
                 existing_job.pop("error", None)
@@ -752,6 +770,11 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
         active_jobs = [job for job in STATE.get("transfer_jobs", {}).values() if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
         if len(active_jobs) >= MAX_CONCURRENT_TRANSFERS or sum(job.get("device_id") == device_id for job in active_jobs) >= MAX_CONCURRENT_TRANSFERS:
             raise web.HTTPTooManyRequests(text=f"Transfer limit reached ({MAX_CONCURRENT_TRANSFERS} active jobs). Wait for one to finish.")
+        try:
+            if size > _available_transfer_space():
+                raise web.HTTPInsufficientStorage(text="Not enough unreserved space on the selected receive drive")
+        except OSError:
+            raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
         if size == 0:
             open(part_path, "xb").close()
         STATE.setdefault("transfer_jobs", {})[job_id] = job
@@ -774,7 +797,14 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
         offset = int(request.headers.get("X-Chunk-Offset", "-1"))
     except ValueError:
         raise web.HTTPBadRequest(text="Invalid chunk offset")
-    chunk = await request.read()
+    if request.content_length is not None and request.content_length > CHUNK_SIZE:
+        raise web.HTTPRequestEntityTooLarge(max_size=CHUNK_SIZE, actual_size=request.content_length)
+    bounded_chunk = bytearray()
+    async for piece in request.content.iter_chunked(64 * 1024):
+        if len(bounded_chunk) + len(piece) > CHUNK_SIZE:
+            raise web.HTTPRequestEntityTooLarge(max_size=CHUNK_SIZE, actual_size=len(bounded_chunk) + len(piece))
+        bounded_chunk.extend(piece)
+    chunk = bytes(bounded_chunk)
     supplied_hash = request.headers.get("X-Chunk-SHA256", "").lower()
     actual_hash = hashlib.sha256(chunk).hexdigest()
     if not re.fullmatch(r"[a-f0-9]{64}", supplied_hash) or not hmac.compare_digest(actual_hash, supplied_hash):
@@ -786,13 +816,29 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
             raise web.HTTPConflict(text=f"Transfer is {job['status']}")
         if offset != job["offset"]:
             return web.json_response({"error": "offset_mismatch", "expected_offset": job["offset"]}, status=409)
+        if job["status"] == "interrupted":
+            try:
+                existing_allocation = min(job["offset"], os.path.getsize(job["part_path"]) if os.path.exists(job["part_path"]) else 0)
+                if job["size"] > _available_transfer_space(exclude_job_id=job["id"], existing_allocation=existing_allocation):
+                    raise web.HTTPInsufficientStorage(text="Not enough unreserved space to continue this transfer")
+            except OSError:
+                raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
         expected_length = min(CHUNK_SIZE, max(0, job["size"] - offset))
         if len(chunk) != expected_length:
             raise web.HTTPBadRequest(text=f"Chunk must contain exactly {expected_length} bytes at this offset")
-        with open(job["part_path"], "ab" if offset else "wb") as output:
-            output.write(chunk)
-            output.flush()
-            os.fsync(output.fileno())
+        try:
+            with open(job["part_path"], "ab" if offset else "wb") as output:
+                output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
+        except OSError as exc:
+            job["status"] = "interrupted"
+            job["error"] = "Receive storage ran out of space" if getattr(exc, "errno", None) == errno.ENOSPC else f"Receive storage write failed: {str(exc)[:120]}"
+            job["updated_at"] = int(time.time())
+            save_persistent_state()
+            if getattr(exc, "errno", None) == errno.ENOSPC:
+                raise web.HTTPInsufficientStorage(text=job["error"]) from exc
+            raise
         job["offset"] += len(chunk)
         job["status"] = "transferring"
         job["chunk_hashes"].append(actual_hash)
@@ -803,7 +849,7 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
 
 async def transfer_status_handler(request: web.Request) -> web.Response:
     job = _get_transfer_job(request, request.match_info["job_id"])
-    return web.json_response({key: job[key] for key in ("id", "filename", "destination", "size", "offset", "status", "updated_at")})
+    return web.json_response({key: job[key] for key in ("id", "filename", "destination", "size", "offset", "status", "updated_at", "error") if key in job})
 
 
 async def complete_transfer_handler(request: web.Request) -> web.Response:
@@ -900,13 +946,14 @@ async def complete_transfer_handler(request: web.Request) -> web.Response:
 async def cancel_transfer_handler(request: web.Request) -> web.Response:
     job = _get_transfer_job(request, request.match_info["job_id"])
     with STATE["lock"]:
-        if job["status"] in {"completed", "cancelled", "verifying"}:
+        if job["status"] in {"completed", "cancelled"}:
             raise web.HTTPConflict(text=f"Transfer is {job['status']}")
         try:
             os.remove(job["part_path"])
-        except FileNotFoundError:
+        except OSError:
             pass
         job["status"] = "cancelled"
+        job["error"] = "Cancelled by host"
         job["updated_at"] = int(time.time())
         save_persistent_state()
     return web.json_response({"status": "cancelled"})

@@ -64,6 +64,30 @@ def _connect_database():
     return connection
 
 
+def _remove_managed_partial(job):
+    part_path = job.get("part_path", "")
+    share_root = job.get("share_root") or STATE.get("share_dir", "")
+    if not part_path or not share_root:
+        return False
+    filename = os.path.basename(part_path)
+    if not (filename.startswith(".supershare-") and filename.endswith(".partial")):
+        return False
+    base_real = os.path.realpath(share_root)
+    part_real = os.path.realpath(part_path)
+    try:
+        if os.path.normcase(os.path.commonpath([base_real, part_real])) != os.path.normcase(base_real):
+            return False
+    except ValueError:
+        return False
+    try:
+        os.remove(part_real)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
+
+
 def load_persistent_state():
     with _connect_database() as connection:
         row = connection.execute("SELECT value FROM settings WHERE key='share_dir'").fetchone()
@@ -82,11 +106,9 @@ def load_persistent_state():
         expired = []
         cutoff = int(time.time()) - TRANSFER_RETENTION_SECONDS
         for job_id, job in STATE["transfer_jobs"].items():
-            if job.get("updated_at", 0) < cutoff and job.get("status") != "completed":
-                try:
-                    os.remove(job.get("part_path", ""))
-                except (OSError, TypeError):
-                    pass
+            if job.get("updated_at", 0) < cutoff:
+                if job.get("status") != "completed" and not _remove_managed_partial(job):
+                    continue
                 expired.append(job_id)
         for job_id in expired:
             STATE["transfer_jobs"].pop(job_id, None)
@@ -141,6 +163,24 @@ def save_persistent_state():
                 "INSERT INTO settings(key, value) VALUES('share_dir', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (STATE["share_dir"],),
             )
+
+
+def cleanup_expired_transfer_jobs(now=None):
+    cutoff = int(now or time.time()) - TRANSFER_RETENTION_SECONDS
+    expired = []
+    with STATE["lock"]:
+        for job_id, job in STATE.get("transfer_jobs", {}).items():
+            if int(job.get("updated_at", 0)) >= cutoff:
+                continue
+            if job.get("status") != "completed" and not _remove_managed_partial(job):
+                continue
+            expired.append(job_id)
+        for job_id in expired:
+            STATE["transfer_jobs"].pop(job_id, None)
+        if expired:
+            with _connect_database() as connection:
+                connection.executemany("DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired])
+    return len(expired)
 
 
 load_persistent_state()

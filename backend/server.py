@@ -8,7 +8,7 @@ import asyncio
 import json
 from aiohttp import web
 
-from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR
+from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR, cleanup_expired_transfer_jobs
 from .api_routes import (
     status_handler,
     upload_permission_handler,
@@ -28,7 +28,6 @@ from .api_routes import (
     download_handler,
     zip_folder_handler,
     zip_selected_handler,
-    upload_handler,
     network_handler,
     pairing_qr_handler,
     diagnostics_handler,
@@ -83,11 +82,20 @@ async def _discovery_broadcaster(app):
 
 async def _start_discovery(app):
     app["discovery_task"] = asyncio.create_task(_discovery_broadcaster(app))
+    app["transfer_cleanup_task"] = asyncio.create_task(_periodic_transfer_cleanup())
+
+
+async def _periodic_transfer_cleanup():
+    while True:
+        await asyncio.sleep(60 * 60)
+        await asyncio.to_thread(cleanup_expired_transfer_jobs)
 
 
 async def _stop_discovery(app):
-    task = app.get("discovery_task")
-    if task:
+    for task_name in ("discovery_task", "transfer_cleanup_task"):
+        task = app.get(task_name)
+        if not task:
+            continue
         task.cancel()
         try:
             await task
@@ -107,7 +115,7 @@ async def api_error_middleware(request: web.Request, handler):
 
 def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
-    app = web.Application(client_max_size=0, middlewares=[api_error_middleware])
+    app = web.Application(client_max_size=64 * 1024, middlewares=[api_error_middleware])
     app["port"] = port
     app["scheme"] = "https" if tls_info else "http"
     app["tls_info"] = tls_info or {}
@@ -132,12 +140,11 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.router.add_post("/api/devices/approve", approve_device_handler)
     app.router.add_get("/api/list", list_files_handler)
     app.router.add_get("/api/host-folders", host_folders_handler)
-    app.router.add_get("/api/pick-host-gui", pick_host_gui_handler)
+    app.router.add_post("/api/pick-host-gui", pick_host_gui_handler)
     app.router.add_get("/api/download", download_handler)
     app.router.add_get("/api/zip", zip_folder_handler)
     app.router.add_get("/api/zip-selected", zip_selected_handler)
 
-    app.router.add_post("/api/upload", upload_handler)
     app.router.add_post("/api/transfers", create_transfer_handler)
     app.router.add_put("/api/transfers/{job_id}/chunk", transfer_chunk_handler)
     app.router.add_get("/api/transfers/{job_id}", transfer_status_handler)

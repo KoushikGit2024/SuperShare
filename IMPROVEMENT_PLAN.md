@@ -26,6 +26,12 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 - Pairing-code entry, profile rename, collision choice, destructive confirmation, and folder creation use an in-page accessible dialog rather than browser-native prompts.
 - Browser upload progress reports recent and average rate, elapsed time, and a cautious remaining-time estimate. The source browser shows a per-file batch queue, and host-side active rows show acknowledged-byte progress with accessible progress labels.
 - Same-file resume that points to a server session already marked complete now exits as complete instead of issuing a second completion request.
+- HTTPS pairing cookies are marked `Secure`; revocation invalidates the saved token, clears trust/permissions, and cancels that profile's active uploads, including a transfer that is verifying. Unauthenticated callers cannot use the cleanup path to cancel another profile's jobs.
+- Local dashboard privilege now requires a loopback peer and loopback Host, and rejects cross-site/fetch-metadata origins; the operating-system folder picker uses a JSON POST rather than a side-effecting GET.
+- Chunk request bodies are capped at the protocol chunk size and assembled from bounded reads. New/resumed jobs check unreserved receive space, and a disk-full write is left in a resumable interrupted state with a clear error.
+- The unused legacy raw-upload route is retired in favor of the checksummed session protocol.
+- Expired transfer sessions are pruned hourly while the host is running; cleanup only removes managed partial files contained under their recorded receive root. Diagnostics include active reserved space.
+- Transfer status responses include stored failure detail so clients can explain interruption and verification failures. Resume checks account for existing partial allocation and other active reservations, and interrupted sessions recheck capacity before accepting another chunk.
 
 ## Remaining work by priority
 
