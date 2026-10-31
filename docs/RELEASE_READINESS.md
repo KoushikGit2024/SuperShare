@@ -8,13 +8,13 @@ Build from a Windows environment with project requirements, PyInstaller, and a c
 
 ## Diagnostics
 
-The laptop dashboard reports candidate local IPv4 addresses, service port, protocol version, receive-root free space, and whether its local API is reachable. It does not change firewall settings or expose file contents. The host emits UDP discovery announcements on port 8766; hotspot client isolation and firewall reachability still need hands-on validation.
+The laptop dashboard reports candidate local IPv4 addresses, service port, protocol version, receive-root free space, and whether its local API is reachable. It does not change firewall settings or expose file contents. `python run.py --https` enables a user-local CA and TLS host certificate; verify the terminal fingerprint and install/pin the CA on each client. The host emits UDP discovery announcements on port 8766; hotspot client isolation and firewall reachability still need hands-on validation.
 
 ## Release gates still open
 
 - Validate Windows hotspot and Android client behavior with internet/mobile data disabled.
 - Confirm UDP broadcast discovery and manual fallback on representative hotspots.
-- Add and verify local TLS before pairing credentials are used outside a trusted private network.
+- Exercise the optional local TLS mode on a clean Windows host and Android device, including certificate regeneration and fingerprint mismatch rejection.
 - Build the Android app, test single/multiple providers, background behavior, low storage, and resume.
 - Benchmark small files, many files, and multi-gigabyte files on hotspot and Wi-Fi; attach result JSON from `tools/benchmark_transfer.py`. The tool removes its uniquely named output after success unless `--keep-file` is supplied.
 - For a remote benchmark, provide the paired device ID and session cookie; the generated default identity is for a local-host diagnostic run.

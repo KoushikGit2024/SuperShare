@@ -48,6 +48,7 @@ function setConnectionState(text, type = "pending") {
 }
 
 let preferredConnectionUrl = "";
+let networkTlsEnabled = false;
 const pairingCodeFromQr = new URLSearchParams(location.search).get("pair_code");
 async function refreshNetworkInfo() {
   const addresses = document.getElementById("networkAddresses");
@@ -60,11 +61,19 @@ async function refreshNetworkInfo() {
     const networkInterfaces = info.interfaces?.length ? info.interfaces : (info.addresses || []).map(address => ({ name: "Network adapter", address }));
     const candidates = networkInterfaces.length ? networkInterfaces : [{ name: "Current connection", address: location.hostname }];
     candidates.forEach(adapter => {
-      const entry = document.createElement("code"); entry.textContent = `${adapter.name}: ${location.protocol}//${adapter.address}:${info.port}/`;
+      const scheme = info.scheme || location.protocol.replace(":", "");
+      const entry = document.createElement("code"); entry.textContent = `${adapter.name}: ${scheme}://${adapter.address}:${info.port}/`;
       entry.title = adapter.netmask ? `IPv4 ${adapter.address} · mask ${adapter.netmask}${adapter.broadcast ? ` · broadcast ${adapter.broadcast}` : ""}` : adapter.address;
       addresses.appendChild(entry);
     });
-    preferredConnectionUrl = `${location.protocol}//${candidates[0].address}:${info.port}/`;
+    preferredConnectionUrl = `${info.scheme || location.protocol.replace(":", "")}://${candidates[0].address}:${info.port}/`;
+    const security = document.getElementById("networkSecurity");
+    const secure = info.scheme === "https";
+    networkTlsEnabled = secure;
+    security.classList.toggle("secure", secure);
+    security.textContent = secure
+      ? `HTTPS enabled · CA SHA-256: ${info.ca_fingerprint || "fingerprint unavailable"}. Verify it on native clients and trust the local CA for browsers.`
+      : "HTTP mode · pairing codes and file data are unencrypted on the local network. Use only a trusted private hotspot or restart with --https.";
     let extra = "";
     if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
       const diagnosticResponse = await fetch("/api/diagnostics", { cache: "no-store" });
@@ -100,6 +109,15 @@ document.getElementById("showPairQrBtn").addEventListener("click", async () => {
     image.src = image.dataset.objectUrl;
     panel.classList.remove("hidden");
   } catch (error) { showNotice(error.message, "error"); }
+});
+
+document.getElementById("copyTlsFingerprintBtn").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/network", { cache: "no-store" });
+    const info = await response.json();
+    await navigator.clipboard.writeText(info.ca_fingerprint || "");
+    showNotice("TLS CA fingerprint copied. Compare it with the value printed in the host terminal.", "success");
+  } catch (_) { showNotice("Could not copy the TLS fingerprint.", "error"); }
 });
 
 async function checkUploadPermission() {
@@ -156,6 +174,7 @@ async function refreshDevices() {
     document.getElementById("openDriveBrowserBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("nativePickerBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("showPairQrBtn").classList.toggle("hidden", !data.host_dashboard);
+    document.getElementById("copyTlsFingerprintBtn").classList.toggle("hidden", !data.host_dashboard || !networkTlsEnabled);
     document.getElementById("destinationName").textContent = data.host_name || "This host";
     document.getElementById("destinationPath").textContent = data.share_root ? `${data.share_root}${currentPath ? `\\${currentPath.replaceAll("/", "\\")}` : ""}` : "Pair and get host approval to view the destination";
     const canUpload = await checkUploadPermission();

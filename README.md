@@ -17,6 +17,8 @@ python run.py
 
 SuperShare starts with normal user permissions. It prints a session pairing code and the available local URLs. Connect the phone and laptop to the same hotspot or Wi-Fi, open the laptop URL on the phone, choose **Pair with host**, and enter the code shown in the host terminal. Compare the three-word phrase on the phone and laptop, confirm it on the phone, then grant read, send, or both permissions in the laptop dashboard.
 
+For encrypted local connections, start with `python run.py --https`. Verify the CA SHA-256 fingerprint printed in the host terminal. Android requires that fingerprint in the client before pairing; browsers require the local CA certificate to be trusted by the operating system/browser. Without `--https`, traffic remains HTTP and should be limited to a trusted private hotspot.
+
 Windows firewall or hotspot isolation settings may prevent clients from reaching the server. SuperShare does not change the Windows firewall or network profile automatically. If needed, allow the server port on the private hotspot network through Windows settings.
 
 ## Shared folder
@@ -25,10 +27,10 @@ The laptop dashboard can choose the active shared root. Remote clients can acces
 
 ## Current limitations
 
-- Pairing uses a session code and local-network HTTP; it is an initial access-control layer, not protection against a hostile network observer. Use a trusted private hotspot until local HTTPS is implemented.
+- Pairing uses a session code and host approval. HTTP is the default compatibility mode and does not encrypt traffic; enable `--https` and verify the printed fingerprint on clients when transport encryption is needed.
 - Browser identity is per browser profile. The Android app has its own persisted random device ID. The laptop dashboard can show a local QR URL for browser pairing; the Android app currently needs the laptop URL and terminal code entered manually.
-- Android native sending requires a content provider that reports a file size. Direct host-push and peer-to-peer sending, persistent foreground notifications, and restart resume remain open; the phone can browse and download from the approved host share.
-- Pairing and transfer still use local HTTP. Use a trusted private network until TLS is implemented.
+- Android native sending requires a content provider that reports a file size. Transfers show a foreground notification and can resume an interrupted upload after reopening the same source URI. If Android removes the app process, reopen SuperShare and reselect the same source from a provider that supports persisted URI grants. Host-to-phone downloads write directly to a selected document-provider destination; download restart resume is not yet supported.
+- Browser HTTPS requires trusting the local CA on the computer or phone browser. Android native HTTPS requires entering the verified CA fingerprint in the app.
 - Neither the Android app nor the Windows packaged build has been built or device-validated in this environment.
 
 See [docs/LOCAL_PROTOCOL.md](docs/LOCAL_PROTOCOL.md), [docs/ANDROID_CLIENT.md](docs/ANDROID_CLIENT.md), and [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) for setup and remaining release gates.

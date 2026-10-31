@@ -10,13 +10,16 @@ Open `android/` in Android Studio with an installed Android SDK and JDK 17, or r
 
 - Registers `ACTION_SEND` and `ACTION_SEND_MULTIPLE` handlers for shared content.
 - Holds granted `content://` URIs and reads them directly from `ContentResolver` in 4 MiB bounded chunks; it does not copy the source into an app staging directory.
+- Requests persistable read access for document-picker selections where the provider supports it, so an interrupted upload can be resumed after reopening the same source.
 - Discovers the laptop through the local UDP announcement, with a manual host URL field as fallback.
 - The Android client does not scan the browser-pairing QR yet; enter the URL and terminal code in the app.
+- For HTTPS, compare the CA fingerprint field against the fingerprint printed in the host terminal. The app pins the CA certificate and verifies the host address against its certificate SAN.
 - Pairs with the host's terminal code, displays the verification phrase, and confirms pairing.
 - Sends to the selected host receive root after host send approval.
 - Prompts on a destination collision and supports keep-both (rename), replace after verification, skip, or cancel.
 - Browses the host's shared root after read approval and streams a chosen file to an Android document-provider destination without app staging.
+- Shows a foreground transfer notification while sending or receiving. Notification progress refresh is limited to roughly once per second.
 
 ## Not ready for release
 
-The native client has not been built or exercised on a device. Sending requires providers to report file size. Transfers do not have a persistent Android notification or resume after Android process death. Failed downloads attempt to delete the partially created document, subject to provider support. The client uses local HTTP because host TLS is not implemented. Add a persisted transfer service, provider capability handling, full keyboard/screen-reader review, QR scanning/prefill, and verified TLS before publishing.
+The native client has not been built or exercised on a device. Sending requires providers to report file size. Upload resume requires reopening the same content URI; Android process death does not automatically restart the transfer. Download resume is not implemented. Failed downloads attempt to delete the partially created document, subject to provider support. Review Android 13+ notification permission behavior, provider capability handling, accessibility, and QR scanning/prefill before publishing.

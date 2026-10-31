@@ -64,7 +64,9 @@ async def _discovery_broadcaster(app):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
         while True:
-            payload = json.dumps({"service": "SuperShare", "protocol_version": 1, "port": app["port"]}).encode("utf-8")
+            payload = json.dumps({"service": "SuperShare", "protocol_version": 1, "port": app["port"],
+                                  "scheme": app["scheme"],
+                                  "ca_fingerprint": app["tls_info"].get("ca_fingerprint")}).encode("utf-8")
             targets = {item["broadcast"] for item in _host_interfaces() if item.get("broadcast")}
             targets.add("255.255.255.255")
             for target in targets:
@@ -103,10 +105,12 @@ async def api_error_middleware(request: web.Request, handler):
         raise web.HTTPNotFound(text=str(exc)) from exc
 
 
-def create_app(port=PORT) -> web.Application:
+def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
     app = web.Application(client_max_size=0, middlewares=[api_error_middleware])
     app["port"] = port
+    app["scheme"] = "https" if tls_info else "http"
+    app["tls_info"] = tls_info or {}
     app.on_startup.append(_start_discovery)
     app.on_cleanup.append(_stop_discovery)
 

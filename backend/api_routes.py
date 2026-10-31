@@ -99,6 +99,8 @@ async def network_handler(request: web.Request) -> web.Response:
         "service": "SuperShare",
         "protocol_version": 1,
         "port": request.url.port or 80,
+        "scheme": request.scheme,
+        "ca_fingerprint": request.app.get("tls_info", {}).get("ca_fingerprint"),
         "addresses": _host_addresses(),
         "interfaces": _host_interfaces(),
         "connection_path": "/",
@@ -114,7 +116,7 @@ async def pairing_qr_handler(request: web.Request) -> web.Response:
         raise web.HTTPServiceUnavailable(text="No local IPv4 address is available for QR pairing")
     address = interfaces[0]["address"]
     port = request.url.port or 80
-    pairing_url = f"http://{address}:{port}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
+    pairing_url = f"{request.scheme}://{address}:{port}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
     try:
         import qrcode
         from qrcode.image.svg import SvgPathImage
@@ -685,6 +687,10 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
     if resume_id:
         with STATE["lock"]:
             existing_job = STATE.get("transfer_jobs", {}).get(resume_id)
+            if (existing_job and existing_job.get("device_id") == device_id and existing_job.get("size") == size
+                    and existing_job.get("destination") == target and existing_job.get("status") == "completed"):
+                return web.json_response({"id": resume_id, "filename": existing_job["filename"], "offset": size,
+                                          "chunk_size": CHUNK_SIZE, "status": "completed"})
             if (existing_job and existing_job.get("device_id") == device_id and existing_job.get("size") == size
                     and existing_job.get("destination") == target and existing_job.get("status") in {"queued", "transferring", "interrupted"}):
                 partial_path = existing_job["part_path"]

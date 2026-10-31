@@ -16,6 +16,14 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.X509TrustManager
+import javax.net.ssl.TrustManagerFactory
+import java.security.SecureRandom
+import java.security.KeyStore
+import java.security.cert.X509Certificate
+import java.security.cert.CertificateException
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -31,6 +39,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("supershare", MODE_PRIVATE) }
     private val deviceId by lazy { prefs.getString("device_id", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("device_id", it).apply() } }
     private lateinit var hostInput: EditText
+    private lateinit var fingerprintInput: EditText
     private lateinit var codeInput: EditText
     private lateinit var phraseText: TextView
     private lateinit var statusText: TextView
@@ -39,15 +48,19 @@ class MainActivity : Activity() {
     private var pendingUris: List<Uri> = emptyList()
     private var phrase = ""
     private var pendingDownloadPath = ""
+    @Volatile private var lastNotificationUpdate = 0L
     @Volatile private var baseHost = ""
     @Volatile private var responseCookie: String? = null
+    @Volatile private var tlsPin = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildScreen()
         handleShareIntent(intent)
         baseHost = prefs.getString("host", "") ?: ""
+        tlsPin = prefs.getString("tls_pin", "") ?: ""
         hostInput.setText(baseHost)
+        fingerprintInput.setText(tlsPin)
         if (prefs.getString("phrase", null) != null) {
             phrase = prefs.getString("phrase", "") ?: ""
             phraseText.text = "Compare this phrase with the laptop: $phrase"
@@ -70,6 +83,10 @@ class MainActivity : Activity() {
         data.clipData?.let { clip -> for (index in 0 until clip.itemCount) selected.add(clip.getItemAt(index).uri) }
         if (selected.isEmpty()) data.data?.let(selected::add)
         if (selected.isNotEmpty()) {
+            selected.forEach { uri ->
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                catch (_: SecurityException) { /* Some document providers grant temporary-only access. */ }
+            }
             pendingUris = selected
             statusText.text = "${selected.size} file(s) selected from their original locations. Pair and approve, then send."
         }
@@ -82,6 +99,8 @@ class MainActivity : Activity() {
         root.addView(label("Connect to your laptop hotspot. Internet is not required.", 14f))
         hostInput = EditText(this).apply { hint = "Laptop address, for example http://192.168.137.1:8765"; setSingleLine(true); setTextColor(-1); setHintTextColor(0xFF9CA3AF.toInt()) }
         root.addView(hostInput, ViewGroup.LayoutParams(-1, -2))
+        fingerprintInput = EditText(this).apply { hint = "HTTPS CA fingerprint from laptop terminal (only for HTTPS)"; setSingleLine(true); setTextColor(-1); setHintTextColor(0xFF9CA3AF.toInt()) }
+        root.addView(fingerprintInput, ViewGroup.LayoutParams(-1, -2))
         codeInput = EditText(this).apply { hint = "Pairing code shown in laptop terminal"; setSingleLine(true); setTextColor(-1); setHintTextColor(0xFF9CA3AF.toInt()) }
         root.addView(codeInput, ViewGroup.LayoutParams(-1, -2))
         pairButton = Button(this).apply { text = "Pair with laptop"; setOnClickListener { pair() } }
@@ -158,7 +177,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun downloadToPhone(remoteFile: String, destination: Uri) = runOnNetwork("Receiving file from laptop…") {
+    private fun downloadToPhone(remoteFile: String, destination: Uri) = runOnNetwork("Receiving file from laptop…", foregroundTransfer = true) {
         val encodedPath = URLEncoder.encode(remoteFile, "UTF-8")
         val connection = (URL("${normalizeHost()}/api/download?path=$encodedPath").openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
@@ -169,6 +188,7 @@ class MainActivity : Activity() {
             setRequestProperty("X-SuperShare-Type", "Android")
             prefs.getString("cookie", null)?.let { setRequestProperty("Cookie", it) }
         }
+        configureTlsPin(connection)
         try {
             if (connection.responseCode !in 200..299) {
                 val error = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -184,6 +204,7 @@ class MainActivity : Activity() {
                     sink.write(buffer, 0, count)
                     total += count
                     runOnUiThread { statusText.text = "Receiving ${remoteFile.substringAfterLast('/')} · ${formatBytes(total)}" }
+                    updateTransferNotification("Receiving · ${formatBytes(total)}")
                 }
                 sink.flush()
             } }
@@ -203,11 +224,22 @@ class MainActivity : Activity() {
         return "%.1f %s".format(amount, units[unit])
     }
 
+    private fun updateTransferNotification(message: String, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (force || now - lastNotificationUpdate >= 1000L) {
+            lastNotificationUpdate = now
+            TransferNotificationService.update(this, message)
+        }
+    }
+
     private fun pair() {
-        val host = normalizeHost()
+        val host = hostInput.text.toString().trim().trimEnd('/')
         val code = codeInput.text.toString().trim()
+        tlsPin = fingerprintInput.text.toString().filter { it.isLetterOrDigit() }.lowercase()
         if (host.isBlank() || code.isBlank()) { statusText.text = "Enter the laptop address and pairing code."; return }
+        if (host.startsWith("https://") && !tlsPin.matches(Regex("[a-f0-9]{64}"))) { statusText.text = "Enter the 64-character CA fingerprint printed in the laptop terminal before using HTTPS."; return }
         prefs.edit().putString("host", host).apply()
+        prefs.edit().putString("tls_pin", tlsPin).apply()
         baseHost = host
         runOnNetwork("Pairing with laptop…") {
             val body = JSONObject().put("code", code).put("id", deviceId).put("name", android.os.Build.MODEL).put("type", "Android")
@@ -233,9 +265,14 @@ class MainActivity : Activity() {
                     socket.receive(packet)
                     val data = JSONObject(String(packet.data, packet.offset, packet.length, Charsets.UTF_8))
                     if (data.optString("service") == "SuperShare" && data.optInt("protocol_version") == 1) {
-                        val candidate = "http://${packet.address.hostAddress}:${data.getInt("port")}"
+                        val scheme = data.optString("scheme", "http")
+                        val candidate = "$scheme://${packet.address.hostAddress}:${data.getInt("port")}"
                         val previousHost = baseHost
                         baseHost = candidate
+                        if (scheme == "https" && !tlsPin.matches(Regex("[a-f0-9]{64}"))) {
+                            runOnUiThread { hostInput.setText(candidate); statusText.text = "HTTPS host found. Compare the CA fingerprint shown in the laptop terminal, enter it above, then pair." }
+                            continue
+                        }
                         try {
                             val handshake = JSONObject(request("/api/network", "GET", null))
                             if (handshake.optString("service") == "SuperShare" && handshake.optInt("protocol_version") == 1) found = candidate
@@ -260,7 +297,7 @@ class MainActivity : Activity() {
 
     private fun sendPending() {
         if (pendingUris.isEmpty()) { statusText.text = "Choose files with the device picker or share them from another app first."; return }
-        runOnNetwork("Checking host access…") {
+        runOnNetwork("Checking host access…", foregroundTransfer = true) {
             val permissionText = request("/api/upload-permission?device=${deviceId}", "GET", null)
             val permission = JSONObject(permissionText)
             if (!permission.optBoolean("allowed")) error(permission.optString("message", "The laptop has not granted send access."))
@@ -282,24 +319,35 @@ class MainActivity : Activity() {
         val name = displayName(uri)
         val size = contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
         if (size < 0) error("$name: this file provider does not report its size; this version cannot send it safely.")
+        val resumeKey = "transfer_${MessageDigest.getInstance("SHA-256").digest("${uri}|$name|$size".toByteArray()).joinToString("") { "%02x".format(it) }}"
+        val resumeId = prefs.getString(resumeKey, "") ?: ""
         var collision = "ask"
         var createdText: String
         try {
-            createdText = createUploadSession(name, size, collision)
+            createdText = createUploadSession(name, size, collision, resumeId)
         } catch (error: Exception) {
             if (!error.message.orEmpty().startsWith("409:")) throw error
             collision = askCollisionChoice(name)
             if (collision == "cancel") return -1
-            if (collision == "skip") return 0
-            createdText = createUploadSession(name, size, collision)
+            if (collision == "skip") { prefs.edit().remove(resumeKey).apply(); return 0 }
+            createdText = createUploadSession(name, size, collision, resumeId)
         }
         val session = JSONObject(createdText)
+        if (session.optString("status") == "skipped") { prefs.edit().remove(resumeKey).apply(); return 0 }
+        if (session.optString("status") == "completed") { prefs.edit().remove(resumeKey).apply(); return 1 }
         val id = session.getString("id")
+        prefs.edit().putString(resumeKey, id).apply()
         val destinationName = session.optString("filename", name)
         val chunkSize = session.getInt("chunk_size")
-        var offset = 0L
+        var offset = session.optLong("offset", 0)
         contentResolver.openInputStream(uri)?.use { input ->
             val buffer = ByteArray(chunkSize)
+            var discard = offset
+            while (discard > 0) {
+                val skipped = input.read(buffer, 0, minOf(buffer.size.toLong(), discard).toInt())
+                if (skipped < 0) error("$name: source ended before the saved resume offset.")
+                discard -= skipped
+            }
             while (offset < size) {
                 val wanted = minOf(buffer.size.toLong(), size - offset).toInt()
                 var count = 0
@@ -309,9 +357,11 @@ class MainActivity : Activity() {
                 request("/api/transfers/$id/chunk", "PUT", chunk, mapOf("X-Chunk-Offset" to offset.toString(), "X-Chunk-SHA256" to chunkHash))
                 offset += count
                 runOnUiThread { statusText.text = "Sending $name as $destinationName · $offset of $size bytes" }
+                updateTransferNotification("Sending · ${formatBytes(offset)} of ${formatBytes(size)}")
             }
         } ?: error("Could not open $name from its original content URI.")
         request("/api/transfers/$id/complete", "POST", "{}")
+        prefs.edit().remove(resumeKey).apply()
         return 1
     }
 
@@ -322,9 +372,9 @@ class MainActivity : Activity() {
         return uri.lastPathSegment?.substringAfterLast('/') ?: "shared-file.bin"
     }
 
-    private fun createUploadSession(name: String, size: Long, collision: String): String = request(
+    private fun createUploadSession(name: String, size: Long, collision: String, resumeId: String): String = request(
         "/api/transfers", "POST",
-        JSONObject().put("name", name).put("size", size).put("path", name).put("collision", collision).toString()
+        JSONObject().put("name", name).put("size", size).put("path", name).put("collision", collision).put("resume_id", resumeId).toString()
     )
 
     private fun askCollisionChoice(name: String): String {
@@ -358,6 +408,7 @@ class MainActivity : Activity() {
             if (body is String) setRequestProperty("Content-Type", "application/json")
             if (body != null) doOutput = true
         }
+        configureTlsPin(connection)
         if (body != null) connection.outputStream.use { output -> when (body) { is String -> output.write(body.toByteArray(Charsets.UTF_8)); is ByteArray -> output.write(body) } }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
@@ -368,12 +419,45 @@ class MainActivity : Activity() {
         return response
     }
 
-    private fun runOnNetwork(message: String, action: () -> Unit) {
+    private fun configureTlsPin(connection: HttpURLConnection) {
+        if (connection !is HttpsURLConnection) return
+        val pin = tlsPin.filter { it.isLetterOrDigit() }.lowercase()
+        if (!pin.matches(Regex("[a-f0-9]{64}"))) error("Enter the CA fingerprint printed by the laptop before connecting with HTTPS.")
+        val trustManager = object : X509TrustManager {
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) { }
+            override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+                val pinnedCa = chain.firstOrNull { certificate ->
+                    certificate.basicConstraints >= 0 && MessageDigest.getInstance("SHA-256")
+                        .digest(certificate.encoded).joinToString("") { "%02x".format(it) } == pin
+                } ?: throw CertificateException("Laptop TLS fingerprint does not match the verified CA fingerprint")
+                val trustStore = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
+                    load(null, null)
+                    setCertificateEntry("supershare-local-ca", pinnedCa)
+                }
+                val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+                factory.init(trustStore)
+                val validator = factory.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()
+                    ?: throw CertificateException("No certificate path validator is available")
+                validator.checkServerTrusted(chain, authType)
+            }
+        }
+        val context = SSLContext.getInstance("TLS")
+        context.init(null, arrayOf(trustManager), SecureRandom())
+        connection.sslSocketFactory = context.socketFactory
+        connection.hostnameVerifier = HttpsURLConnection.getDefaultHostnameVerifier()
+    }
+
+    private fun runOnNetwork(message: String, foregroundTransfer: Boolean = false, action: () -> Unit) {
         statusText.text = message
         pairButton.isEnabled = false
+        if (foregroundTransfer) TransferNotificationService.start(this, "Preparing transfer")
         executor.execute {
             try { action() } catch (error: Exception) { runOnUiThread { statusText.text = error.message ?: "Connection failed" } }
-            finally { runOnUiThread { pairButton.isEnabled = true } }
+            finally {
+                if (foregroundTransfer) TransferNotificationService.stop(this@MainActivity)
+                runOnUiThread { pairButton.isEnabled = true }
+            }
         }
     }
 

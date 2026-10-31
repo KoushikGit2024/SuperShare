@@ -19,6 +19,8 @@ body { margin: 0; padding: 16px 16px 96px 16px; background: var(--bg); color: va
 .network-addresses code { padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: #bfdbfe; }
 .network-status { margin-top: 10px; color: #86efac; font-size: .8rem; }
 .network-status.error { color: #fda4af; }
+.network-security { margin-top: 6px; color: #fbbf24; font-size: .78rem; overflow-wrap: anywhere; }
+.network-security.secure { color: #86efac; }
 .network-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .pair-qr { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
 .pair-qr img { width: 180px; height: 180px; padding: 8px; background: white; border-radius: 6px; }

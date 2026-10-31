@@ -104,9 +104,20 @@ def main():
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--https", action="store_true", help="Enable local TLS; pin the printed CA fingerprint on native clients")
     args = parser.parse_args()
 
     active_port = args.port
+    tls_context = None
+    tls_info = None
+    if args.https:
+        from backend.tls_config import create_tls_context
+        try:
+            tls_context, tls_info = create_tls_context()
+        except Exception as exc:
+            print(f"[ERROR] Could not create local TLS certificates: {exc}")
+            print("[INFO] Install project requirements and retry, or use HTTP only on a trusted private hotspot.")
+            return 1
 
     print_header()
     print(f"[PAIRING] Session pairing code: {PAIRING_CODE}")
@@ -115,6 +126,12 @@ def main():
 
     if sys.platform == "win32":
         print("[INFO] Running with standard user permissions; Windows network settings are not changed.")
+    if tls_info:
+        print("[TLS] HTTPS enabled. Verify this CA SHA-256 fingerprint on each client:")
+        print(f"      {tls_info['ca_fingerprint']}")
+        print(f"[TLS] Local CA certificate: {tls_info['ca_cert_path']}")
+
+    scheme = "https" if tls_context else "http"
 
     if args.dir and os.path.isdir(args.dir):
         STATE["share_dir"] = os.path.abspath(args.dir)
@@ -157,7 +174,7 @@ def main():
     print()
 
     print("[PC] Dashboard:")
-    print(f"     http://localhost:{active_port}/")
+    print(f"     {scheme}://localhost:{active_port}/")
 
     print()
 
@@ -168,11 +185,11 @@ def main():
 
         interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
-            url = f"http://{ip}:{active_port}/"
+            url = f"{scheme}://{ip}:{active_port}/"
             print(f"     {interface_names.get(ip, 'Network adapter')}: {url}")
 
         primary_ip = local_ips[0]
-        phone_url = f"http://{primary_ip}:{active_port}/"
+        phone_url = f"{scheme}://{primary_ip}:{active_port}/"
 
         print()
 
@@ -197,13 +214,14 @@ def main():
 
     try:
         webbrowser.open(
-            f"http://localhost:{active_port}/"
+            f"{scheme}://localhost:{active_port}/"
         )
 
         web.run_app(
-            create_app(port=active_port),
+            create_app(port=active_port, tls_info=tls_info),
             host=HOST,
             port=active_port,
+            ssl_context=tls_context,
             print=None
         )
 

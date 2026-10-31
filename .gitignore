@@ -23,6 +23,7 @@ supershare_state.tmp
 supershare_state.sqlite3
 supershare_state.sqlite3-shm
 supershare_state.sqlite3-wal
+supershare_tls/
 .temp_*.zip
 shared_files/
 *.log
