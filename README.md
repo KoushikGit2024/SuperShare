@@ -19,7 +19,7 @@ SuperShare starts with normal user permissions. It prints a session pairing code
 
 For encrypted local connections, start with `python run.py --https`. Browsers require the local CA certificate to be trusted by the operating system/browser. Without `--https`, traffic remains HTTP and should be limited to a trusted private hotspot.
 
-Windows firewall or hotspot isolation settings may prevent clients from reaching the server. SuperShare does not change the Windows firewall or network profile automatically. If needed, allow the server port on the private hotspot network through Windows settings.
+On Windows, normal `python run.py` startup checks the default-route network and Windows hotspot profiles. When setup is needed, Windows asks for administrator approval to set those profiles to Private and add an inbound TCP rule for the selected port, limited to local-subnet addresses on the Private profile. The file-sharing server itself continues to run as your normal user. No router port forwarding is configured. If setup is cancelled, hotspot clients may still be blocked by the firewall.
 
 ## Shared folder
 

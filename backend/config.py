@@ -22,7 +22,7 @@ SHARE_DIR = DATA_DIR / "shared_files"
 os.makedirs(SHARE_DIR, exist_ok=True)
 
 HOST = "0.0.0.0"
-PORT = 8765
+PORT = 80
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB streaming chunks for huge files
 MAX_CONCURRENT_TRANSFERS = 2
 TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60

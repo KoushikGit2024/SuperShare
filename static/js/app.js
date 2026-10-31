@@ -151,7 +151,11 @@ async function refreshNetworkInfo() {
       const label = document.createElement("span"); label.className = "hotspot-kind"; label.textContent = connection.kind || "Wi-Fi / hotspot";
       const url = document.createElement("code"); url.textContent = connection.url;
       const adapter = document.createElement("span"); adapter.className = "hotspot-adapter"; adapter.textContent = `Using ${connection.name} · ${connection.address}`;
-      card.append(label, url, adapter); addresses.appendChild(card);
+      const routeHint = document.createElement("span"); routeHint.className = "hotspot-adapter";
+      routeHint.textContent = connection.kind === "Windows hotspot"
+        ? "Use this when the phone is connected to this laptop’s Windows Mobile Hotspot."
+        : "Use this when this laptop is connected to the phone’s hotspot or the same Wi-Fi as the phone.";
+      card.append(label, url, adapter, routeHint); addresses.appendChild(card);
     } else {
       const empty = document.createElement("p"); empty.className = "no-hotspot";
       empty.textContent = "No Wi-Fi or hotspot address was detected. Turn on the laptop hotspot, connect this laptop to Wi-Fi, then refresh.";
@@ -324,59 +328,24 @@ async function refreshDevices() {
       approval.textContent = device.trusted ? "Persistent trust" : device.approved_until ? `Temporary approval until ${new Date(device.approved_until * 1000).toLocaleString()}` : "No active approval";
       info.append(title, meta, identity, approval); main.append(avatar, info);
       const isThisProfile = device.id === localDeviceId;
-      const paired = Boolean(device.paired || isThisProfile);
-      const phraseConfirmed = Boolean(device.pair_confirmed || isThisProfile);
-      const accessActive = Boolean(isThisProfile || device.trusted || (device.approved_until || 0) > Math.floor(Date.now() / 1000));
-      const effectivePermissions = isThisProfile ? { read: true, write: true } : device.permissions;
-      const hasPermission = Boolean(effectivePermissions?.read || effectivePermissions?.write);
-      const pending = paired && !(phraseConfirmed && accessActive && hasPermission);
-      const state = document.createElement("span"); state.className = `device-state ${!paired || pending ? "pending" : device.online ? "online" : "offline"}`;
-      if (!paired) state.append(icon("pending"), document.createTextNode(" Pairing incomplete"));
-      else if (!phraseConfirmed) state.append(icon("pending"), document.createTextNode(" Verify phrase"));
-      else if (pending) state.append(icon("pending"), document.createTextNode(" Needs approval"));
-      else {
-        const permissionText = `${effectivePermissions?.read ? "Read" : ""}${effectivePermissions?.read && effectivePermissions?.write ? " + " : ""}${effectivePermissions?.write ? "Send" : ""}`;
-        const accessText = device.trusted ? "Trusted" : (device.approved_until || 0) > Math.floor(Date.now() / 1000) ? `Temporary · expires ${new Date(device.approved_until * 1000).toLocaleTimeString()}` : "No active approval";
-        state.textContent = `${device.online ? "Online" : "Offline"} · ${accessText} · ${permissionText}`;
-      }
+      const state = document.createElement("span"); 
+      state.className = `device-state ${device.online ? "online" : "offline"}`;
+      state.textContent = `${device.online ? "Online" : "Offline"} · Ready to Share · Read + Send`;
       li.append(main, state);
       {
         const controls = document.createElement("div"); controls.className = "device-controls";
         const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename";
         rename.onclick = async () => {
-          const name = await editText("Name browser profile", `This label helps distinguish this browser profile. It does not verify the physical device.\n\nProfile ID: ${device.id}`, "Display name", device.name);
+          const name = await editText("Name device", `Give this device a recognizable name:`, "Display name", device.name);
           if (!name) return;
           const ok = await deviceAction("/api/devices/rename", { id: device.id, name });
           if (ok) refreshDevices();
         };
         controls.appendChild(rename);
         if (device.id !== localDeviceId) {
-        if (pending && phraseConfirmed) {
-          const approve = (label, permissions, remember = false) => {
-            const button = document.createElement("button"); button.className = remember ? "btn-xs outline" : "btn-xs accent"; button.textContent = label;
-            button.onclick = async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions, remember })) refreshDevices(); };
-            controls.appendChild(button);
-          };
-          approve("Read + send · 15 min", { read: true, write: true });
-          approve("Read only · 15 min", { read: true, write: false });
-          approve("Send only · 15 min", { read: false, write: true });
-          approve("Trust read + send", { read: true, write: true }, true);
-        } else if (device.trusted || (device.approved_until || 0) > Math.floor(Date.now() / 1000)) {
-          const updateAccess = (label, permissions) => {
-            const button = document.createElement("button"); button.className = "btn-xs outline"; button.textContent = label;
-            button.onclick = async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions })) refreshDevices(); };
-            controls.appendChild(button);
-          };
-          updateAccess("Read + send", { read: true, write: true });
-          updateAccess("Read only", { read: true, write: false });
-          updateAccess("Send only", { read: false, write: true });
-          const revoke = document.createElement("button"); revoke.className = "btn-xs outline"; revoke.textContent = "Revoke access";
-          revoke.onclick = async () => { if (await confirmAction("Revoke browser access?", `This invalidates ${device.name}'s saved pairing credential and cancels its active uploads. The browser must pair again before it can be approved.`, true) && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); };
-          controls.appendChild(revoke);
-        }
-        const forget = document.createElement("button"); forget.className = "btn-xs outline"; forget.textContent = "Forget";
-        forget.onclick = async () => { if (await confirmAction("Forget this browser profile?", `${device.name}'s saved identity and access record will be removed from this host. It must pair again to reconnect.`, true) && await deviceAction("/api/devices/forget", { id: device.id })) refreshDevices(); };
-        controls.appendChild(forget);
+          const forget = document.createElement("button"); forget.className = "btn-xs outline"; forget.textContent = "Remove";
+          forget.onclick = async () => { if (await confirmAction("Remove device?", `Remove ${device.name} from the devices list?`, true) && await deviceAction("/api/devices/forget", { id: device.id })) refreshDevices(); };
+          controls.appendChild(forget);
         }
         li.append(controls);
       }
@@ -386,6 +355,7 @@ async function refreshDevices() {
     if (data.host_dashboard) renderTransfers(window._lastTransfers);
     else document.getElementById("transferList").innerHTML = '<li class="empty-state">Transfer history is available on the laptop dashboard.</li>';
     if (canUpload.canRead && !window._sharedFilesLoaded) fetchDirectory(currentPath).catch(showDirectoryError);
+    if (typeof syncTabIndicators === "function") syncTabIndicators();
   } catch (_) { setConnectionState("Host unreachable", "error"); }
 }
 
@@ -574,7 +544,7 @@ function updateSelectionUI() {
   selectedItems.forEach(meta => { if (!meta.is_dir) totalBytes += meta.size || 0; });
   document.getElementById("selectionSummary").textContent = `${count} selected`;
   const bar = document.getElementById("selectionActionBar");
-  if (count > 0) {
+  if (count > 0 && (typeof activeTabId === "undefined" || activeTabId === "storageSection")) {
     bar.classList.remove("hidden");
     document.getElementById("barSelectedCount").textContent = `${count} item(s) selected`;
     document.getElementById("barSelectedSize").textContent = `Size: ${formatBytes(totalBytes)}`;
@@ -807,6 +777,7 @@ document.getElementById("clearSelectionBtn").onclick = () => {
 
 async function uploadFiles(files, retryName = null) {
   if (!files.length) return;
+  if (typeof switchTab === "function" && activeTabId !== "sendSection") switchTab("sendSection", false);
   const box = document.getElementById("progressContainer");
   const name = document.getElementById("uploadFileName");
   const bar = document.getElementById("uploadBarFill");
@@ -889,7 +860,9 @@ async function uploadFiles(files, retryName = null) {
             const currentRate = Math.max(offset - lastSampleOffset, 0) / sampleSeconds;
             const averageRate = (offset - resumeOffset) / elapsedSeconds;
             const remainingSeconds = averageRate > 0 ? Math.ceil((file.size - offset) / averageRate) : 0;
-            speed.textContent = `${formatBytes(currentRate)}/s recent · ${formatBytes(averageRate)}/s avg · ${formatDuration(elapsedSeconds)} elapsed${remainingSeconds ? ` · about ${formatDuration(remainingSeconds)} left` : ""}`;
+            const etaText = remainingSeconds ? ` · ETA: ${formatDuration(remainingSeconds)}` : "";
+            speed.textContent = `${progress}% (${formatBytes(offset)} / ${formatBytes(file.size)}) · ${formatBytes(currentRate)}/s${etaText}`;
+            queueEntry.state.textContent = `${progress}% · ${formatBytes(currentRate)}/s${etaText}`;
             lastSampleAt = now; lastSampleOffset = offset;
           }
           name.textContent = `Verifying ${file.name}`;
@@ -929,6 +902,121 @@ document.getElementById("newFolderBtn").onclick = async () => {
   if (response.ok) fetchDirectory(currentPath); else showNotice(await responseError(response), "error");
 };
 
+
+
+/* --- Interactive Tab Navigation & Live Tab Counters --- */
+let activeTabId = "sendSection";
+
+function switchTab(targetSectionId, updateHash = false) {
+  const tabs = document.querySelectorAll(".tab-btn[data-tab]");
+  const panels = document.querySelectorAll(".tab-panel");
+  if (!tabs.length || !panels.length) return;
+
+  activeTabId = targetSectionId;
+
+  tabs.forEach(tab => {
+    const isTarget = tab.dataset.tab === targetSectionId;
+    tab.classList.toggle("active", isTarget);
+    tab.setAttribute("aria-selected", isTarget ? "true" : "false");
+    tab.setAttribute("tabindex", isTarget ? "0" : "-1");
+  });
+
+  panels.forEach(panel => {
+    const isTarget = panel.id === targetSectionId;
+    panel.classList.toggle("tab-hidden", !isTarget);
+  });
+
+  if (typeof updateSelectionUI === "function") {
+    updateSelectionUI();
+  }
+
+  if (updateHash && history.replaceState) {
+    history.replaceState(null, "", `#${targetSectionId}`);
+  }
+}
+
+function initTabNavigation() {
+  const tabs = Array.from(document.querySelectorAll(".tab-btn[data-tab]"));
+  if (!tabs.length) return;
+
+  tabs.forEach((tab, idx) => {
+    tab.addEventListener("click", () => {
+      switchTab(tab.dataset.tab, true);
+    });
+
+    tab.addEventListener("keydown", event => {
+      let nextIndex = null;
+      if (event.key === "ArrowRight") nextIndex = (idx + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") nextIndex = (idx - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = tabs.length - 1;
+
+      if (nextIndex !== null) {
+        event.preventDefault();
+        tabs[nextIndex].focus();
+        switchTab(tabs[nextIndex].dataset.tab, true);
+      }
+    });
+  });
+
+  const hashTarget = location.hash ? location.hash.slice(1) : "";
+  const validPanelIds = new Set(tabs.map(t => t.dataset.tab));
+  if (pairingCodeFromQr) {
+    switchTab("sendSection", false);
+  } else if (hashTarget && validPanelIds.has(hashTarget)) {
+    switchTab(hashTarget, false);
+  } else {
+    switchTab("sendSection", false);
+  }
+
+  window.addEventListener("dragenter", event => {
+    if (event.dataTransfer?.types?.includes("Files") && activeTabId !== "sendSection") {
+      switchTab("sendSection", false);
+    }
+  });
+}
+
+function syncTabIndicators() {
+  const devices = window._lastDevices || [];
+  const transfers = (window._lastTransfers || []).filter(t => !String(t.device_id || "").startsWith("benchmark-"));
+  const activeStates = ["queued", "transferring", "interrupted", "verifying"];
+
+  const deviceBadge = document.getElementById("tabDeviceBadge");
+  if (deviceBadge) deviceBadge.textContent = String(devices.length);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const hasPendingDevice = devices.some(device => {
+    const isThisProfile = device.id === localDeviceId;
+    if (isThisProfile) return false;
+    const paired = Boolean(device.paired);
+    const phraseConfirmed = Boolean(device.pair_confirmed);
+    const accessActive = Boolean(device.trusted || (device.approved_until || 0) > nowSec);
+    const hasPermission = Boolean(device.permissions?.read || device.permissions?.write);
+    return !paired || !(phraseConfirmed && accessActive && hasPermission);
+  });
+
+  const deviceDot = document.getElementById("tabDeviceDot");
+  if (deviceDot) deviceDot.classList.toggle("hidden", !hasPendingDevice);
+
+  const phrasePanel = document.getElementById("pairPhrasePanel");
+  const pairBtn = document.getElementById("pairDeviceBtn");
+  const needsSendAttention = (phrasePanel && !phrasePanel.classList.contains("hidden")) || (pairBtn && !pairBtn.classList.contains("hidden"));
+  const sendDot = document.getElementById("tabSendDot");
+  if (sendDot) sendDot.classList.toggle("hidden", !needsSendAttention);
+
+  const transferBadge = document.getElementById("tabTransferBadge");
+  const activeCount = transfers.filter(t => activeStates.includes(t.status)).length;
+  if (transferBadge) {
+    transferBadge.textContent = String(activeCount > 0 ? activeCount : transfers.length);
+    transferBadge.classList.toggle("active-count", activeCount > 0);
+  }
+}
+
+document.getElementById("quickQrBtn")?.addEventListener("click", () => {
+  if (typeof switchTab === "function") switchTab("networkSection", true);
+  document.getElementById("showPairQrBtn")?.click();
+});
+initTabNavigation();
 fetchDirectory().catch(showDirectoryError);
 refreshDevices();
 refreshNetworkInfo();

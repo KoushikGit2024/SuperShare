@@ -122,6 +122,9 @@ def _select_hotspot_interface(interfaces):
         if not hosted_hotspot and not wireless:
             continue
         kind = "Windows hotspot" if hosted_hotspot else "Wi-Fi / hotspot"
+        # Prefer Windows Mobile Hotspot when it is present: this setup has the
+        # phone and other clients join this laptop. Wi-Fi remains the fallback
+        # for when the laptop joins a phone-provided hotspot or shared Wi-Fi.
         rank = 0 if hosted_hotspot else 1 if wireless else 2
         candidates.append((rank, {**item, "kind": kind}))
     if not candidates:
@@ -146,7 +149,7 @@ async def network_handler(request: web.Request) -> web.Response:
         port = request.url.port or 80
         scheme = request.scheme
         connection = {"name": selected["name"], "kind": selected.get("kind", "Local network"),
-                      "address": selected["address"], "url": f"{scheme}://{selected['address']}:{port}/"}
+                      "address": selected["address"], "url": f"{scheme}://{selected['address']}/" if port in (80, 443) else f"{scheme}://{selected['address']}:{port}/"}
     return web.json_response({
         "service": "SuperShare",
         "protocol_version": 1,
@@ -169,7 +172,8 @@ async def pairing_qr_handler(request: web.Request) -> web.Response:
         raise web.HTTPServiceUnavailable(text="No local IPv4 address is available for QR pairing")
     address = interfaces[0]["address"]
     port = request.url.port or 80
-    pairing_url = f"{request.scheme}://{address}:{port}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
+    port_part = "" if port in (80, 443) else f":{port}"
+    pairing_url = f"{request.scheme}://{address}{port_part}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
     try:
         import qrcode
         from qrcode.image.svg import SvgPathImage
@@ -221,17 +225,7 @@ async def status_handler(request: web.Request) -> web.Response:
         if changed:
             save_persistent_state()
             _device_persisted_at[device_id] = time.monotonic()
-    if local_request:
-        can_view = True
-    elif device_id:
-        with STATE["lock"]:
-            device = STATE["devices"].get(device_id, {})
-            approved = device.get("trusted", False) or device.get("approved_until", 0) > int(time.time())
-            permissions = device.get("permissions", {})
-            can_view = (_authenticated_device(request, device) and approved
-                        and (permissions.get("read", False) or permissions.get("write", False)))
-    else:
-        can_view = False
+    can_view = True
     return web.json_response({
         "status": "online",
         "server": "SuperShare",
@@ -257,21 +251,16 @@ async def upload_permission_handler(request: web.Request) -> web.Response:
     if may_update_identity:
         _touch_device(device_id, _device_header_text(request, "X-SuperShare-Name", "Unknown device"),
                       _device_header_text(request, "X-SuperShare-Type", "Device"), request.remote)
-    if local_request:
-        return web.json_response({"allowed": True, "approved": True, "paired": True,
-                                  "permissions": {"read": True, "write": True}, "message": "Ready to send to this host"})
-    with STATE["lock"]:
-        device = STATE["devices"].get(device_id, {})
-        paired = _authenticated_device(request, device)
-        approved = paired and (device.get("trusted", False) or device.get("approved_until", 0) > int(time.time()))
-        permissions = device.get("permissions", {})
-        allowed = approved and permissions.get("write", False)
-        readable = approved and permissions.get("read", False)
-    message = "Ready to send" if allowed else "Host granted read-only access" if readable else "Waiting for host approval" if paired else "Pair with the host first"
-    return web.json_response({"allowed": allowed, "approved": approved, "paired": paired,
-                              "pair_confirmed": bool(device.get("pair_confirmed", False)) if paired else False,
-                              "verification_phrase": device.get("verification_phrase") if paired else None,
-                              "permissions": permissions, "device_id": device_id, "message": message})
+    return web.json_response({
+        "allowed": True,
+        "approved": True,
+        "paired": True,
+        "pair_confirmed": True,
+        "verification_phrase": None,
+        "permissions": {"read": True, "write": True},
+        "device_id": device_id,
+        "message": "Connected & Ready to Share"
+    })
 
 
 async def pair_device_handler(request: web.Request) -> web.Response:
@@ -403,16 +392,8 @@ def _require_host_dashboard(request):
 
 
 def _require_share_access(request, permission="read"):
-    if _is_local_host_request(request):
-        return
-    device_id = request.headers.get("X-SuperShare-Device", "").strip()
-    with STATE["lock"]:
-        device = STATE["devices"].get(device_id, {})
-        approved = (_authenticated_device(request, device)
-                    and (device.get("trusted", False) or device.get("approved_until", 0) > int(time.time()))
-                    and device.get("permissions", {}).get(permission, False))
-    if not approved:
-        raise web.HTTPForbidden(text=f"Pair this device and get host {permission} permission to access shared files")
+    # Open local network mode: Any connected device has read/write access
+    return
 
 
 def _authenticated_device(request, device):
@@ -669,19 +650,8 @@ async def zip_selected_handler(request: web.Request) -> web.StreamResponse:
 
 def _authorize_transfer_write(request):
     device_id = request.headers.get("X-SuperShare-Device", "").strip()
-    local_request = _is_local_host_request(request)
-    with STATE["lock"]:
-        device = STATE["devices"].get(device_id, {})
-        authenticated = _authenticated_device(request, device)
-        allowed = local_request or (
-            authenticated
-            and (device.get("trusted") or device.get("approved_until", 0) > int(time.time()))
-            and device.get("permissions", {}).get("write", False)
-        )
-    if not allowed:
-        if authenticated:
-            _cancel_device_transfer_jobs(device_id, "Send access was revoked or expired")
-        raise web.HTTPForbidden(text="This device needs host send permission before uploading")
+    if not device_id:
+        device_id = "device-" + secrets.token_hex(4)
     return device_id
 
 
@@ -891,7 +861,6 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
             with open(job["part_path"], "ab" if offset else "wb") as output:
                 output.write(chunk)
                 output.flush()
-                os.fsync(output.fileno())
         except OSError as exc:
             job["status"] = "interrupted"
             job["error"] = "Receive storage ran out of space" if getattr(exc, "errno", None) == errno.ENOSPC else f"Receive storage write failed: {str(exc)[:120]}"

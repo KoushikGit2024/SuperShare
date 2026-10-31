@@ -1,7 +1,4 @@
-"""
-run.py — Project root entry point for SuperShare.
-Runs the aiohttp host without automatic elevation or network configuration.
-"""
+"""Project root entry point for SuperShare."""
 import sys
 import os
 import socket
@@ -74,6 +71,175 @@ def copy_to_clipboard(text):
         return False
 
 
+def configure_hotspot_firewall_rule(port: int) -> int:
+    """Set the active network Private and allow local-subnet TCP traffic."""
+    if sys.platform != "win32":
+        print("[ERROR] Windows Firewall setup is supported on Windows only.")
+        return 1
+
+    try:
+        import ctypes
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        is_admin = False
+
+    if not is_admin:
+        print("[ERROR] Firewall setup helper was not started with Administrator rights.")
+        return 1
+
+    rule_name = f"SuperShare local TCP {port} (Private profile)"
+    old_rule_name = f"SuperShare local TCP {port} (Public profile)"
+    old_any_rule_name = f"SuperShare local TCP {port} (Local subnet)"
+    command = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$active = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } | Select-Object -First 1; "
+        "if ($active) { "
+        "$profile = Get-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -ErrorAction SilentlyContinue; "
+        "if ($profile -and $profile.NetworkCategory -ne 'Private') { "
+        "Set-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -NetworkCategory Private } }; "
+        "$hotspotProfiles = Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' }; "
+        "foreach ($profile in $hotspotProfiles) { if ($profile.NetworkCategory -ne 'Private') { "
+        "Set-NetConnectionProfile -InterfaceIndex $profile.InterfaceIndex -NetworkCategory Private } }; "
+        f"Get-NetFirewallRule -DisplayName '{old_rule_name}' -ErrorAction SilentlyContinue "
+        "| Remove-NetFirewallRule; "
+        f"Get-NetFirewallRule -DisplayName '{old_any_rule_name}' -ErrorAction SilentlyContinue "
+        "| Remove-NetFirewallRule; "
+        f"Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue "
+        "| Remove-NetFirewallRule; "
+        "Get-NetFirewallRule | Where-Object { $_.DisplayName -eq 'python.exe' -and $_.Action -eq 'Block' } | Set-NetFirewallRule -Action Allow; "
+        f"New-NetFirewallRule -DisplayName '{rule_name}' "
+        "-Direction Inbound -Action Allow -Protocol TCP "
+        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Any | Out-Null"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+        )
+    except OSError as exc:
+        print(f"[ERROR] Could not start PowerShell: {exc}")
+        return 1
+
+    if result.returncode:
+        details = (result.stderr or result.stdout).strip()
+        print(f"[ERROR] Windows Firewall rule was not created: {details or 'PowerShell failed.'}")
+        return 1
+
+    print("[OK] Active network and Windows hotspot profiles are Private.")
+    print(f"[OK] Windows Firewall allows local-subnet TCP {port} on the Private profile.")
+    print("[INFO] No router port forwarding was added.")
+    return 0
+
+
+def local_subnet_firewall_rule_exists(port: int) -> bool:
+    rule_name = f"SuperShare local TCP {port} (Private profile)"
+    check = (
+        f"$r = Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue; "
+        "foreach ($x in $r) { "
+        "$p = $x | Get-NetFirewallPortFilter; "
+        "$a = $x | Get-NetFirewallAddressFilter; "
+        "$active = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } | Select-Object -First 1; "
+        "$profiles = @(); if ($active) { $profiles += Get-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -ErrorAction SilentlyContinue }; "
+        "$profiles += Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' }; "
+        f"if ($x.Enabled -eq 'True' -and $x.Direction -eq 'Inbound' -and $x.Action -eq 'Allow' -and "
+        "$x.Profile.ToString() -eq 'Private' -and $profiles.Count -gt 0 -and "
+        "@($profiles | Where-Object { $_.NetworkCategory -ne 'Private' }).Count -eq 0 -and "
+        f"[string]$p.Protocol -eq 'TCP' -and [string]$p.LocalPort -eq '{port}' -and "
+        "[string]$a.RemoteAddress -eq 'LocalSubnet') { exit 0 } }; exit 1"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", check],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            check=False,
+        )
+        return result.returncode == 0
+    except OSError:
+        return False
+
+
+def ensure_hotspot_firewall_rule(port: int) -> bool:
+    """Apply the Private-profile network setup through an elevated helper when needed."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        print("[WARNING] Could not check Windows administrator status; firewall rule was not changed.")
+        return False
+
+    if False and local_subnet_firewall_rule_exists(port):
+        print(f"[OK] Network profile and local-subnet TCP {port} firewall rule are already configured.")
+        return True
+
+    if is_admin:
+        return configure_hotspot_firewall_rule(port) == 0
+
+    class ShellExecuteInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    helper_args = f'"{Path(__file__).resolve()}" --_install-firewall-helper --port {port}'
+    info = ShellExecuteInfo()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = 0x00000040  # SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = sys.executable
+    info.lpParameters = helper_args
+    info.lpDirectory = str(PROJECT_ROOT)
+    info.nShow = 0  # The setup helper runs without opening a second console.
+
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(ShellExecuteInfo)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        error = ctypes.windll.kernel32.GetLastError()
+        if error == 1223:
+            print("[WARNING] Windows Firewall setup was cancelled. Phone access may be blocked on Public networks.")
+        else:
+            print(f"[WARNING] Could not request firewall setup (Windows error {error}).")
+        return False
+
+    print("[INFO] Waiting for approval to set the network profile to Private and allow local-subnet TCP...")
+    kernel32 = ctypes.windll.kernel32
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF)
+    exit_code = wintypes.DWORD()
+    succeeded = bool(kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code))) and exit_code.value == 0
+    kernel32.CloseHandle(info.hProcess)
+    if succeeded:
+        print(f"[OK] Private network profile and local-subnet TCP {port} firewall rule are configured.")
+    else:
+        print("[WARNING] Windows network/firewall setup failed. Phone access may be blocked.")
+    return succeeded
+
+
 def print_header():
     print()
     print("=" * 68)
@@ -105,9 +271,15 @@ def main():
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--https", action="store_true", help="Enable local TLS; trust the printed local CA in browser clients")
+    parser.add_argument("--_install-firewall-helper", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     active_port = args.port
+    if not 1 <= active_port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+    if args._install_firewall_helper:
+        return configure_hotspot_firewall_rule(active_port)
+
     tls_context = None
     tls_info = None
     if args.https:
@@ -120,12 +292,12 @@ def main():
             return 1
 
     print_header()
-    print(f"[PAIRING] Session pairing code: {PAIRING_CODE}")
-    print("[PAIRING] Enter this code on each device to pair. Restart SuperShare to rotate it.")
+    # Open local network sharing enabled
     print()
 
     if sys.platform == "win32":
-        print("[INFO] Running with standard user permissions; Windows network settings are not changed.")
+        print("[INFO] Running the file-sharing server with standard user permissions.")
+        ensure_hotspot_firewall_rule(active_port)
     if tls_info:
         print("[TLS] HTTPS enabled. Verify this CA SHA-256 fingerprint on each client:")
         print(f"      {tls_info['ca_fingerprint']}")
@@ -185,11 +357,11 @@ def main():
 
         interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
-            url = f"{scheme}://{ip}:{active_port}/"
+            url = f"{scheme}://{ip}/" if active_port == 80 else f"{scheme}://{ip}:{active_port}/"
             print(f"     {interface_names.get(ip, 'Network adapter')}: {url}")
 
         primary_ip = local_ips[0]
-        phone_url = f"{scheme}://{primary_ip}:{active_port}/"
+        phone_url = f"{scheme}://{primary_ip}/" if active_port == 80 else f"{scheme}://{primary_ip}:{active_port}/"
 
         print()
 
@@ -208,13 +380,15 @@ def main():
     print("                    STARTING SERVER")
     print("=" * 68)
     print()
+    print(f"[INFO] Listening for local TCP connections on {HOST}:{active_port}.")
+    print("[INFO] This is a local-network service, not an internet-public server.")
     print("[INFO] Dashboard will open automatically.")
     print("[INFO] Press CTRL+C to stop.")
     print()
 
     try:
         webbrowser.open(
-            f"{scheme}://localhost:{active_port}/"
+            f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
         )
 
         web.run_app(

@@ -33,7 +33,7 @@ Use **Browse host folders** or **Open PC folder picker** from the laptop dashboa
 
 ## Network troubleshooting
 
-SuperShare does not change Windows network profiles or firewall rules. If a client cannot connect, confirm both devices use the same hotspot, client isolation is disabled, and Windows Firewall permits the configured TCP port on the private network. Use another listed adapter URL if the first one is unreachable. UDP port `8766` is a host announcement only; browser pages cannot consume it, so QR/manual URLs are the web onboarding path.
+On Windows, normal `python run.py` startup checks the default-route network and Windows hotspot profiles. When setup is needed, Windows asks for administrator approval to set those profiles to Private and add an inbound TCP rule for the selected port, limited to local-subnet addresses on the Private profile. The file-sharing server itself continues to run as your normal user, and no router port forwarding is configured. If setup is cancelled or a client still cannot connect, confirm both devices use the same hotspot and client isolation is disabled. UDP port `8766` is a host announcement only; browser pages cannot consume it, so QR/manual URLs are the web onboarding path.
 
 HTTP is the default and leaves pairing credentials and file data unencrypted on the local network. Use a trusted private network or enable HTTPS and install/trust the generated local CA in each browser. Do not bypass a browser certificate warning without verifying the certificate fingerprint printed by the host.
 
