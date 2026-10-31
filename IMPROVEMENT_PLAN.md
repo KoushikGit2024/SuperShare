@@ -9,13 +9,14 @@ The first supported setup should remain Windows laptop as the hotspot-connected 
 ## Current state
 
 - The primary runtime is `run.py` plus the `backend/` aiohttp application.
-- A second, older implementation exists in `app/` and can serve its own templates/static assets. The copies have already drifted and are a source of defects.
-- Browser clients periodically register a name, platform guess, IP address, and last-seen time. This identifies browser profiles, not authenticated devices.
-- The dashboard can approve or trust an ID, but requests are not authenticated by a secret credential. A client can claim another device ID.
-- The host can browse and expose arbitrary host folders. Path safety and authorization need stronger boundaries before broad LAN use.
-- Uploads stream to the final destination name, have progress in the sending browser, and appear in history after completion. Interrupted uploads can leave a partial file under the final name; there is no resume, checksum, cancellation, or durable active-transfer state.
-- Browser uploads go to the laptop host. They do not select a receiver device. Browser security also prevents universal “share from any app” support.
-- The frontend has device management, status notices, route/destination information, a file explorer, drop/paste upload, and transfer history. History is primarily receive-side and does not provide full active-job management.
+- Both supported launch paths use the same backend and canonical `static/` UI; `app.server` is a compatibility import.
+- Browser profiles and the Android client scaffold have persistent random IDs, pairing credentials, phrase confirmation, approval, scoped read/send permissions, and host-side revocation. The Android identity and client are not device-validated.
+- The host chooses one receive root. Remote access is token and approval gated; host folder browsing and root changes are local-dashboard only.
+- Browser and Android sender paths use durable chunk sessions, per-chunk SHA-256 checks, server whole-file hashes, atomic publication, collision choices, resume on browser same-file reselect, cancellation, and seven-day abandoned-session cleanup.
+- The Android app handles Sharesheet single/multiple content URIs and streams from the original provider without staging copies. It currently sends only to the laptop host.
+- The host announces itself over local UDP broadcast; the Android scaffold listens and offers manual address entry. QR pairing, TLS, Android receive, and persistent background transfers remain open.
+- The dashboard includes device controls, connection addresses, free-space diagnostics, transfer state/progress/history filters, cancellation, browser drop/paste, and file browsing. Full accessibility and device-width review remains open.
+- Neither the Android app nor the frozen Windows package has been built and validated on target hardware. Real hotspot, restart/resume, large-file, and throughput measurements remain release gates.
 
 ## Guiding principles
 
@@ -57,9 +58,12 @@ Other native peers ────────────────────�
 - **Phase 1 remaining:** validate on real Windows/hotspot/browser combinations and assess trusted TLS for local use. Pairing credentials currently travel over local HTTP, so use a trusted private hotspot. Phase 1 will be called complete after those checks are possible.
 - **Phase 2:** browser pairing and scoped access are implemented locally. Browser devices pair with a session code and per-device credential; a three-word phrase is shown on both sides, the joining device must confirm it, and host permission grants are blocked until that confirmation. Read/send scopes, rename, trust, revoke, and forget are implemented. Native identity and QR pairing remain open.
 - **Phase 2 remaining:** move from browser-profile identity to native device identity, add QR pairing and richer per-device permission/root management, and confirm revocation behavior on real clients.
-- **Phase 3:** initial resumable browser-to-host transfer path is implemented locally: SQLite-backed sessions, fixed-size chunks with per-chunk SHA-256 validation, acknowledged offsets, resume when the same file is selected again in the same browser profile, server-side whole-file SHA-256 recording, atomic no-overwrite publication, restart recovery state, and cancel action/API.
-- **Phase 3 remaining:** conflict choices, retries from failed/checksum-mismatch jobs, richer byte-rate and ETA detail, recovery/retention policy, concurrency limits, and real interruption/restart validation. The current browser sender retains a file handle only during the page lifetime; the user must reselect the same file to resume.
-- **Phase 4 onward:** not started.
+- **Phase 3:** transfer sessions support skip/rename/replace/cancel collision choices, two concurrent sessions maximum, durable chunk offsets, resume on same-file reselect, retry after checksum failure, cancellation, SHA-256 verification/recording, and seven-day cleanup of abandoned partial jobs. Real interruption/restart and large-file validation remains outstanding.
+- **Phase 4:** host address candidates, a local connection panel, a copy-address action, a versioned service handshake endpoint, and a UDP broadcast announcement are implemented. Android has a discovery listener and manual URL fallback. QR fallback, network-interface naming, and real hotspot/multicast validation remain open.
+- **Phase 5:** section navigation, active transfer progress/history filters, cancellation, collision prompts, route summary, live announcements, and local free-space status are present. Upload preflight rejects insufficient disk space. Full screen-reader, keyboard, phone-width and accessibility review remains open.
+- **Phase 6:** an Android Sharesheet project scaffold can pair, verify the phrase, and stream single/multiple `content://` sources without staging copies. Android receive, foreground notifications, provider resume, unknown-size provider handling, and device validation remain open.
+- **Phase 7:** a real-network upload benchmark CLI reports elapsed time, throughput, and client/server SHA-256 in JSON. Benchmarks have not been run; tuning and multi-device/load measurements remain open.
+- **Phase 8:** a Windows PyInstaller build script, stable frozen-app data directory, local storage/connection diagnostics, and release checklist are added. Packaging, firewall, migration, clean install, upgrade, rollback, and uninstall still require Windows validation.
 
 ## Phase 0 decisions and working defaults
 

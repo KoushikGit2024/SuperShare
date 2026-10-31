@@ -8,18 +8,23 @@ import threading
 import time
 import sqlite3
 import secrets
+import sys
 
 BACKEND_DIR = Path(__file__).resolve().parent
 BASE_DIR = BACKEND_DIR.parent
-STATIC_DIR = BASE_DIR / "static"
+FROZEN_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+STATIC_DIR = FROZEN_DIR / "static"
 TEMPLATE_DIR = STATIC_DIR / "templates"
-SHARE_DIR = BASE_DIR / "shared_files"
+DATA_DIR = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "SuperShare") if getattr(sys, "frozen", False) else BASE_DIR
+SHARE_DIR = DATA_DIR / "shared_files"
 
 os.makedirs(SHARE_DIR, exist_ok=True)
 
 HOST = "0.0.0.0"
 PORT = 8765
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB streaming chunks for huge files
+MAX_CONCURRENT_TRANSFERS = 2
+TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 # Mutable runtime state so the active shared directory can be changed on the fly
 STATE = {
@@ -29,8 +34,9 @@ STATE = {
     "lock": threading.RLock(),
 }
 
-STATE_FILE = BASE_DIR / "supershare_state.json"  # legacy state import source
-DATABASE_FILE = BASE_DIR / "supershare_state.sqlite3"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE = DATA_DIR / "supershare_state.json"  # legacy state import source
+DATABASE_FILE = DATA_DIR / "supershare_state.sqlite3"
 PAIRING_CODE = secrets.token_urlsafe(9)
 
 
@@ -60,7 +66,24 @@ def load_persistent_state():
         for job in STATE["transfer_jobs"].values():
             if job.get("status") in {"queued", "transferring", "verifying"}:
                 job["status"] = "interrupted"
-        if rows or STATE["devices"]:
+        expired = []
+        cutoff = int(time.time()) - TRANSFER_RETENTION_SECONDS
+        for job_id, job in STATE["transfer_jobs"].items():
+            if job.get("updated_at", 0) < cutoff and job.get("status") != "completed":
+                try:
+                    os.remove(job.get("part_path", ""))
+                except (OSError, TypeError):
+                    pass
+                expired.append(job_id)
+        for job_id in expired:
+            STATE["transfer_jobs"].pop(job_id, None)
+        connection.executemany(
+            "INSERT INTO transfer_jobs(id, updated_at, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
+            [(job_id, int(job.get("updated_at", time.time())), json.dumps(job, ensure_ascii=False)) for job_id, job in STATE["transfer_jobs"].items()],
+        )
+        if expired:
+            connection.executemany("DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired])
+        if rows or STATE["devices"] or STATE["transfer_jobs"]:
             return
         try:
             legacy = json.loads(STATE_FILE.read_text(encoding="utf-8"))

@@ -12,9 +12,11 @@ import ipaddress
 import hashlib
 import hmac
 import secrets
+import socket
+import shutil
 from aiohttp import web
 
-from .config import STATE, CHUNK_SIZE, PAIRING_CODE, save_persistent_state, record_transfer
+from .config import STATE, CHUNK_SIZE, MAX_CONCURRENT_TRANSFERS, PAIRING_CODE, save_persistent_state, record_transfer
 from .file_manager import (
     safe_join,
     list_directory,
@@ -36,9 +38,60 @@ def _public_transfers(limit=50):
     with STATE["lock"]:
         items = list(STATE["transfers"])
         for job in STATE.get("transfer_jobs", {}).values():
-            if job.get("status") not in {"completed", "failed", "cancelled"}:
-                items.append({key: job.get(key) for key in ("id", "device_id", "filename", "size", "offset", "status", "updated_at", "destination")})
+            if job.get("status") != "completed":
+                items.append({"id": job.get("id"), "device_id": job.get("device_id"), "filename": job.get("filename"),
+                              "size": job.get("size"), "offset": job.get("offset"), "status": job.get("status"),
+                              "timestamp": job.get("created_at"), "updated_at": job.get("updated_at"),
+                              "destination": job.get("destination"), "detail": job.get("error", "")})
         return sorted(items, key=lambda item: item.get("timestamp", item.get("updated_at", 0)))[-limit:]
+
+
+def _host_addresses():
+    addresses = set()
+    try:
+        for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
+            address = result[4][0]
+            if not address.startswith("127."):
+                addresses.add(address)
+    except OSError:
+        pass
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 9))
+            address = probe.getsockname()[0]
+            if address and not address.startswith("127."):
+                addresses.add(address)
+        finally:
+            probe.close()
+    except OSError:
+        pass
+    return sorted(addresses, key=lambda address: (not address.startswith("192.168.137."), address))
+
+
+async def network_handler(request: web.Request) -> web.Response:
+    return web.json_response({
+        "service": "SuperShare",
+        "protocol_version": 1,
+        "port": request.url.port or 80,
+        "addresses": _host_addresses(),
+        "connection_path": "/",
+        "pairing_required": True,
+        "internet_required": False,
+    })
+
+
+async def diagnostics_handler(request: web.Request) -> web.Response:
+    _require_host_dashboard(request)
+    root = STATE["share_dir"]
+    try:
+        usage = shutil.disk_usage(root)
+        storage = {"available_bytes": usage.free, "total_bytes": usage.total}
+    except OSError as exc:
+        storage = {"error": str(exc)}
+    return web.json_response({"service": "online", "protocol_version": 1, "port": request.url.port or 80,
+                              "addresses": _host_addresses(), "receive_root": root, "storage": storage,
+                              "pairing_code_rotates_on_restart": True})
 
 
 async def status_handler(request: web.Request) -> web.Response:
@@ -525,10 +578,16 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
         size = int(body.get("size", -1))
         destination = str(body.get("path", name))
         resume_id = str(body.get("resume_id", ""))
+        collision = str(body.get("collision", "ask"))
     except (ValueError, TypeError):
         raise web.HTTPBadRequest(text="Invalid transfer details")
     if not name or size < 0 or size > 100 * 1024**3:
         raise web.HTTPBadRequest(text="A filename and size up to 100 GB are required")
+    try:
+        if shutil.disk_usage(STATE["share_dir"]).free < size:
+            raise web.HTTPInsufficientStorage(text="Not enough free space on the selected receive drive")
+    except OSError:
+        raise web.HTTPInsufficientStorage(text="The selected receive drive is unavailable")
     target = safe_join(STATE["share_dir"], destination)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     if resume_id:
@@ -543,10 +602,40 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
                 existing_job["updated_at"] = int(time.time())
                 save_persistent_state()
                 return web.json_response({"id": resume_id, "offset": existing_job["offset"], "chunk_size": CHUNK_SIZE, "status": "interrupted"})
+            if (existing_job and existing_job.get("device_id") == device_id and existing_job.get("size") == size
+                    and existing_job.get("destination") == target and existing_job.get("status") == "failed"
+                    and not os.path.exists(target) and os.path.exists(existing_job.get("part_path", ""))):
+                with open(existing_job["part_path"], "r+b") as partial:
+                    partial.truncate(0)
+                existing_job["offset"] = 0
+                existing_job["chunk_hashes"] = []
+                existing_job["status"] = "queued"
+                existing_job["updated_at"] = int(time.time())
+                existing_job.pop("error", None)
+                save_persistent_state()
+                return web.json_response({"id": resume_id, "offset": 0, "chunk_size": CHUNK_SIZE, "status": "queued"})
+    if collision not in {"ask", "skip", "rename", "replace"}:
+        raise web.HTTPBadRequest(text="Collision choice must be ask, skip, rename, or replace")
+    if os.path.exists(target):
+        if collision == "ask":
+            return web.json_response({"error": "destination_exists", "filename": os.path.basename(target), "choices": ["skip", "rename", "replace", "cancel"]}, status=409)
+        if collision == "skip":
+            return web.json_response({"status": "skipped", "filename": os.path.basename(target)})
+        if collision == "rename":
+            stem, extension = os.path.splitext(target)
+            suffix = 1
+            while os.path.exists(f"{stem} ({suffix}){extension}"):
+                suffix += 1
+            target = f"{stem} ({suffix}){extension}"
+    with STATE["lock"]:
+        active_jobs = [job for job in STATE.get("transfer_jobs", {}).values() if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
+        if len(active_jobs) >= MAX_CONCURRENT_TRANSFERS or sum(job.get("device_id") == device_id for job in active_jobs) >= MAX_CONCURRENT_TRANSFERS:
+            raise web.HTTPTooManyRequests(text=f"Transfer limit reached ({MAX_CONCURRENT_TRANSFERS} active jobs). Wait for one to finish.")
     job_id = uuid.uuid4().hex
     part_path = os.path.join(os.path.dirname(target), f".supershare-{job_id}.partial")
     job = {"id": job_id, "device_id": device_id, "filename": os.path.basename(target),
            "destination": target, "part_path": part_path, "size": size, "offset": 0,
+           "collision": collision,
            "status": "queued", "created_at": int(time.time()), "updated_at": int(time.time()),
            "chunk_hashes": []}
     if size == 0:
@@ -631,12 +720,15 @@ async def complete_transfer_handler(request: web.Request) -> web.Response:
         job["updated_at"] = int(time.time())
         save_persistent_state()
         raise web.HTTPUnprocessableEntity(text="SHA-256 checksum mismatch; retry this transfer")
-    if os.path.exists(job["destination"]):
+    if os.path.exists(job["destination"]) and job.get("collision") != "replace":
         job["status"] = "failed"
         job["error"] = "Destination already exists"
         save_persistent_state()
         raise web.HTTPConflict(text="A file already exists at this destination")
-    os.link(job["part_path"], job["destination"])
+    if job.get("collision") == "replace":
+        os.replace(job["part_path"], job["destination"])
+    else:
+        os.link(job["part_path"], job["destination"])
     os.remove(job["part_path"])
     job["status"] = "completed"
     job["sha256"] = actual_digest

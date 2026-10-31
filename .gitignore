@@ -13,6 +13,9 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 # Runtime state and generated transfer/archive files
 supershare_state.json
@@ -21,6 +24,14 @@ supershare_state.sqlite3
 supershare_state.sqlite3-shm
 supershare_state.sqlite3-wal
 .temp_*.zip
+shared_files/
+*.log
+dist/
+build/
+android/.gradle/
+android/local.properties
+android/**/build/
+benchmark-results/
 
 # OS/editor files
 .DS_Store

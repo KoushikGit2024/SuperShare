@@ -47,6 +47,45 @@ function setConnectionState(text, type = "pending") {
   el.textContent = text; el.className = `connection-state ${type}`;
 }
 
+let preferredConnectionUrl = "";
+async function refreshNetworkInfo() {
+  const addresses = document.getElementById("networkAddresses");
+  const status = document.getElementById("networkStatus");
+  try {
+    const response = await fetch("/api/network", { cache: "no-store" });
+    if (!response.ok) throw new Error(await responseError(response));
+    const info = await response.json();
+    addresses.replaceChildren();
+    const hosts = info.addresses?.length ? info.addresses : [location.hostname];
+    hosts.forEach(host => {
+      const url = `${location.protocol}//${host}:${info.port}/`;
+      const code = document.createElement("code"); code.textContent = url; addresses.appendChild(code);
+    });
+    preferredConnectionUrl = `${location.protocol}//${hosts[0]}:${info.port}/`;
+    let extra = "";
+    if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+      const diagnosticResponse = await fetch("/api/diagnostics", { cache: "no-store" });
+      if (diagnosticResponse.ok) {
+        const diagnostic = await diagnosticResponse.json();
+        extra = diagnostic.storage?.available_bytes != null ? ` · ${formatBytes(diagnostic.storage.available_bytes)} free on receive drive` : "";
+      }
+    }
+    status.textContent = `Service reachable · TCP ${info.port} · Pairing required · Internet not required${extra}`;
+    status.classList.remove("error");
+  } catch (error) {
+    status.textContent = `Connection diagnostics unavailable: ${error.message}`;
+    status.classList.add("error");
+  }
+}
+
+document.getElementById("copyConnectionBtn").addEventListener("click", async () => {
+  try {
+    if (!preferredConnectionUrl) await refreshNetworkInfo();
+    await navigator.clipboard.writeText(preferredConnectionUrl || location.href);
+    showNotice("Connection address copied. Open it on a device connected to this hotspot.", "success");
+  } catch (_) { showNotice("Could not copy the connection address. Select and copy it from the Network section.", "error"); }
+});
+
 async function checkUploadPermission() {
   const response = await fetch("/api/upload-permission", { headers: deviceHeaders(), credentials: "same-origin" });
   if (!response.ok) throw new Error(`Connection check failed (${response.status})`);
@@ -166,7 +205,8 @@ async function refreshDevices() {
       }
       list.appendChild(li);
     });
-    if (data.host_dashboard) renderTransfers(data.transfers || []);
+    window._lastTransfers = data.transfers || [];
+    if (data.host_dashboard) renderTransfers(window._lastTransfers);
     else document.getElementById("transferList").innerHTML = '<li class="empty-state">Transfer history is available on the laptop dashboard.</li>';
     if (canUpload.canRead && !window._sharedFilesLoaded) fetchDirectory(currentPath).catch(showDirectoryError);
   } catch (_) { setConnectionState("Host unreachable", "error"); }
@@ -188,8 +228,10 @@ document.getElementById("confirmPairingBtn").addEventListener("click", confirmPa
 
 function renderTransfers(transfers) {
   const list = document.getElementById("transferList"); list.replaceChildren();
-  if (!transfers.length) { list.innerHTML = '<li class="empty-state">No transfers yet.</li>'; return; }
-  [...transfers].reverse().forEach(t => {
+  const filter = document.getElementById("transferFilter")?.value || "all";
+  const filtered = [...transfers].reverse().filter(t => filter === "all" || (filter === "active" ? ["queued", "transferring", "interrupted", "verifying"].includes(t.status) : t.status === filter));
+  if (!filtered.length) { const empty = document.createElement("li"); empty.className = "empty-state"; empty.textContent = filter === "all" ? "No transfers yet." : `No ${filter} transfers.`; list.appendChild(empty); return; }
+  filtered.forEach(t => {
     const li = document.createElement("li"); li.className = "transfer-row";
     const device = (window._lastDevices || []).find(item => item.id === t.device_id);
     const name = document.createElement("strong"); name.textContent = t.filename;
@@ -219,6 +261,8 @@ function renderTransfers(transfers) {
     list.appendChild(li);
   });
 }
+
+document.getElementById("transferFilter").addEventListener("change", () => renderTransfers(window._lastTransfers || []));
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -369,6 +413,7 @@ async function uploadFiles(files, retryName = null) {
   const percent = document.getElementById("uploadPercent");
   const speed = document.getElementById("uploadSpeed");
   box.classList.remove("hidden");
+  let skippedFiles = 0;
   try {
     const access = await checkUploadPermission();
     if (!access.canSend) throw new Error("The host has not enabled send access for this device.");
@@ -387,9 +432,19 @@ async function uploadFiles(files, retryName = null) {
           const headers = { "Content-Type": "application/json", ...deviceHeaders() };
           const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
           const resumeId = localStorage.getItem(resumeKey) || "";
-          const created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId }) });
+          let collision = "ask";
+          let created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId, collision }) });
+          if (created.status === 409) {
+            const choice = prompt(`A file named "${file.name}" already exists. Choose skip, rename, replace, or cancel. Replacing overwrites the existing file after the new transfer verifies.`, "rename");
+            collision = (choice || "cancel").trim().toLowerCase();
+            if (collision === "cancel") { skippedFiles++; resolve(); return; }
+            if (!["skip", "rename", "replace"].includes(collision)) throw new Error("Choose skip, rename, replace, or cancel.");
+            if (collision === "replace" && !confirm(`Replace ${file.name} after the incoming file verifies?`)) { resolve(); return; }
+            created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, collision }) });
+          }
           if (!created.ok) throw new Error(await responseError(created));
           const session = await created.json();
+          if (session.status === "skipped") { skippedFiles++; resolve(); return; }
           localStorage.setItem(resumeKey, session.id);
           let offset = session.offset || 0;
           const chunkSize = session.chunk_size;
@@ -412,9 +467,9 @@ async function uploadFiles(files, retryName = null) {
         })().catch(reject);
       });
     }
-    name.textContent = `Completed ${files.length} file${files.length === 1 ? "" : "s"}`; percent.textContent = "100%"; bar.style.width = "100%";
+    name.textContent = `Completed ${files.length - skippedFiles}; skipped ${skippedFiles}`; percent.textContent = "100%"; bar.style.width = "100%";
     document.querySelector(".running-indicator")?.classList.add("complete");
-    setConnectionState("Last transfer completed", "online"); showNotice(`Sent ${files.length} file${files.length === 1 ? "" : "s"} to ${document.getElementById("destinationName").textContent}.`, "success"); fetchDirectory(currentPath); refreshDevices();
+    setConnectionState("Last transfer completed", "online"); showNotice(`Sent ${files.length - skippedFiles}; skipped ${skippedFiles} to ${document.getElementById("destinationName").textContent}.`, "success"); fetchDirectory(currentPath); refreshDevices();
   } catch (error) { name.textContent = "Transfer failed"; document.querySelector(".running-indicator")?.classList.add("failed"); setConnectionState("Transfer failed", "error"); showNotice(error.message, "error"); refreshDevices(); }
 }
 
@@ -434,4 +489,6 @@ document.getElementById("newFolderBtn").onclick = async () => {
 
 fetchDirectory().catch(showDirectoryError);
 refreshDevices();
+refreshNetworkInfo();
 setInterval(refreshDevices, 5000);
+setInterval(refreshNetworkInfo, 30000);

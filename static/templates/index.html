@@ -17,20 +17,29 @@
         <button class="btn-xs accent" id="openDriveBrowserBtn"><svg class="icon" aria-hidden="true"><use href="#i-folder-open"/></svg> Browse host folders</button>
         <button class="btn-xs outline" id="nativePickerBtn"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg> Open PC folder picker</button>
       </div>
+      <nav class="section-nav" aria-label="SuperShare sections">
+        <a href="#networkSection">Network</a><a href="#devicesSection">Devices</a><a href="#transfersSection">Transfers</a><a href="#sendSection">Send</a><a href="#storageSection">Storage</a>
+      </nav>
     </header>
 
-    <section class="card device-card">
+    <section class="card network-card" id="networkSection" aria-labelledby="networkTitle">
+      <div class="section-heading"><div><h2 id="networkTitle">Local connection</h2><p>Connect this laptop and phone to the same hotspot. Internet access is not required.</p></div><button id="copyConnectionBtn" class="btn-xs outline" type="button">Copy connection address</button></div>
+      <div id="networkAddresses" class="network-addresses" aria-live="polite">Checking local network addresses…</div>
+      <div id="networkStatus" class="network-status">Checking SuperShare service</div>
+    </section>
+
+    <section class="card device-card" id="devicesSection">
       <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-devices"/></svg> Devices on this hotspot</h2><p>Each browser is identified separately. Devices appear here after opening SuperShare.</p></div><span id="deviceCount" class="device-count">0 devices</span></div>
       <ul id="deviceList" class="device-list"><li class="empty-state">Waiting for devices to connect…</li></ul>
     </section>
 
-    <section class="card">
-      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> Recent transfers</h2><p>Each record shows who sent the file, where it was saved, and when.</p></div></div>
+    <section class="card" id="transfersSection">
+      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> Transfers</h2><p>Active jobs and recent results with sender, destination, progress, and current state.</p></div><label class="transfer-filter-label" for="transferFilter">Show <select id="transferFilter"><option value="all">All states</option><option value="active">Active</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label></div>
       <ul id="transferList" class="transfer-list"><li class="empty-state">No transfers yet.</li></ul>
     </section>
 
     <!-- Upload Card -->
-    <section class="card">
+    <section class="card" id="sendSection">
       <h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-send"/></svg> Send files or folders from this browser</h2>
       <div class="route-summary" id="routeSummary"><span class="route-item"><strong>From</strong><span id="sourceDeviceName">This device</span></span><span class="route-arrow" aria-hidden="true">→</span><span class="route-item"><strong>To</strong><span id="destinationName">This host</span><code id="destinationPath">Loading destination...</code></span><span class="connection-state" id="connectionState">Checking connection</span><button id="pairDeviceBtn" class="btn-xs accent hidden" type="button">Pair with host</button></div>
       <div id="pairPhrasePanel" class="pair-phrase hidden"><div><strong>Verify this phrase on the laptop</strong><code id="pairPhrase"></code><span>Compare all three words with the laptop dashboard, then confirm on both devices.</span></div><button id="confirmPairingBtn" class="btn-xs accent" type="button">Phrase matches</button></div>
@@ -47,7 +56,7 @@
     </section>
 
     <!-- File & Folder Explorer -->
-    <section class="card">
+    <section class="card" id="storageSection">
       <div class="browser-header">
         <h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-files"/></svg> Shared files and folders</h2>
         <div class="browser-actions">

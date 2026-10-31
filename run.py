@@ -55,7 +55,7 @@ def get_local_ips():
     except Exception:
         pass
 
-    return sorted(ips)
+    return sorted(ips, key=lambda ip: (not ip.startswith("192.168.137."), ip))
 
 
 def is_port_in_use(port):
