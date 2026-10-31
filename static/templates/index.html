@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SuperShare — Offline File & Folder Hub</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>⚡ SuperShare</h1>
+      <span class="badge">100% Offline • Direct Drive & Folder Browser</span>
+      <div class="host-root-bar">
+        <span id="hostRootText" class="host-root-text">Shared Path: Loading...</span>
+        <button class="btn-xs accent" id="openDriveBrowserBtn">🗂️ Browse Host PC Drives / Folders</button>
+        <button class="btn-xs outline" id="nativePickerBtn">💻 Native PC Popup</button>
+      </div>
+    </header>
+
+    <!-- Upload Card -->
+    <section class="card">
+      <h2>📤 Send Files or Entire Folders to Current Path</h2>
+      <div class="btn-grid">
+        <label class="btn primary">📄 Select Files<input type="file" id="fileInput" multiple hidden></label>
+        <label class="btn secondary">📁 Select Folder<input type="file" id="folderInput" webkitdirectory directory multiple hidden></label>
+      </div>
+      <div id="progressContainer" class="progress-box hidden">
+        <div class="progress-title" id="uploadFileName">Uploading...</div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="uploadBarFill"></div></div>
+        <div class="progress-stats"><span id="uploadPercent">0%</span><span id="uploadSpeed">0 MB/s</span></div>
+      </div>
+    </section>
+
+    <!-- File & Folder Explorer -->
+    <section class="card">
+      <div class="browser-header">
+        <h2>📥 Shared Files & Folders</h2>
+        <div class="browser-actions">
+          <button class="btn-sm outline" id="newFolderBtn">➕ New Folder</button>
+          <a id="zipCurrentBtn" href="/api/zip?path=" class="btn-sm accent">📦 Download Folder (.zip)</a>
+        </div>
+      </div>
+      <div class="breadcrumb" id="breadcrumbBar">📍 /</div>
+      <div class="select-toolbar">
+        <label class="checkbox-label"><input type="checkbox" id="selectAllCheckbox"><span>Select All</span></label>
+        <span id="selectionSummary" class="selection-summary">0 selected</span>
+      </div>
+      <ul class="file-list" id="fileList"><li class="empty-state">Loading...</li></ul>
+    </section>
+  </div>
+
+  <!-- Host PC Drive & Folder Picker Modal (Works from both Phone & PC!) -->
+  <div id="hostModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🗂️ Select Any Drive or Folder on Host PC</h3>
+        <button id="closeModalBtn" class="btn-xs outline">✖</button>
+      </div>
+      <div class="drives-bar" id="drivesBar"></div>
+      <div class="modal-path" id="modalCurrentPath">C:\</div>
+      <ul class="modal-folder-list" id="modalFolderList"></ul>
+      <div class="modal-footer">
+        <button id="selectThisHostFolderBtn" class="btn primary" style="width:100%">✅ Share & Open This Folder</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Multi-Select Action Bar -->
+  <div id="selectionActionBar" class="selection-bar hidden">
+    <div class="selection-bar-info"><strong id="barSelectedCount">0 selected</strong><span id="barSelectedSize"></span></div>
+    <div class="selection-bar-buttons">
+      <button id="downloadSelectedBtn" class="btn-sm success">📦 Download Selected (.zip)</button>
+      <button id="deleteSelectedBtn" class="btn-sm danger">🗑️ Delete</button>
+      <button id="clearSelectionBtn" class="btn-sm outline">✖ Clear</button>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
