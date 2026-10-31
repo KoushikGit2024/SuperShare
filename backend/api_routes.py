@@ -5,9 +5,11 @@ import os
 import json
 import asyncio
 import urllib.parse
+import re
+import time
 from aiohttp import web
 
-from .config import STATE, CHUNK_SIZE
+from .config import STATE, CHUNK_SIZE, save_persistent_state, record_transfer
 from .file_manager import (
     safe_join,
     list_directory,
@@ -19,11 +21,87 @@ from .file_manager import (
 
 
 async def status_handler(request: web.Request) -> web.Response:
+    device_id = request.headers.get("X-SuperShare-Device", "").strip()
+    if device_id:
+        _touch_device(device_id, request.headers.get("X-SuperShare-Name", "Unknown device"),
+                      request.headers.get("X-SuperShare-Type", "Device"), request.remote)
     return web.json_response({
         "status": "online",
         "server": "SuperShare",
-        "share_root": STATE["share_dir"]
+        "share_root": STATE["share_dir"],
+        "host_name": os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "SuperShare host"),
+        "devices": _public_devices(),
+        "transfers": STATE["transfers"][-50:],
     })
+
+
+def _touch_device(device_id, name, device_type, remote):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
+        return
+    with STATE["lock"]:
+        old = STATE["devices"].get(device_id, {})
+        STATE["devices"][device_id] = {
+            "id": device_id,
+            "name": (name or "Unknown device")[:80],
+            "type": (device_type or "Device")[:40],
+            "ip": remote or old.get("ip", ""),
+            "first_seen": old.get("first_seen", int(time.time())),
+            "last_seen": int(time.time()),
+            "online": True,
+            "trusted": old.get("trusted", False),
+        }
+    save_persistent_state()
+
+
+def _public_devices():
+    now = int(time.time())
+    with STATE["lock"]:
+        result = []
+        for device in STATE["devices"].values():
+            item = dict(device)
+            item["online"] = now - item.get("last_seen", 0) < 25
+            result.append(item)
+        return sorted(result, key=lambda d: (not d["online"], d["name"].lower()))
+
+
+async def devices_handler(request: web.Request) -> web.Response:
+    return web.json_response({"devices": _public_devices(), "transfers": STATE["transfers"][-50:]})
+
+
+async def rename_device_handler(request: web.Request) -> web.Response:
+    body = await request.json()
+    device_id = body.get("id", "")
+    name = str(body.get("name", "")).strip()[:80]
+    with STATE["lock"]:
+        device = STATE["devices"].get(device_id)
+        if not device or not name:
+            raise web.HTTPBadRequest(text="Device and non-empty name are required")
+        device["name"] = name
+    save_persistent_state()
+    return web.json_response({"status": "ok"})
+
+
+async def forget_device_handler(request: web.Request) -> web.Response:
+    body = await request.json()
+    with STATE["lock"]:
+        STATE["devices"].pop(body.get("id", ""), None)
+    save_persistent_state()
+    return web.json_response({"status": "ok"})
+
+
+async def approve_device_handler(request: web.Request) -> web.Response:
+    body = await request.json()
+    with STATE["lock"]:
+        device = STATE["devices"].get(body.get("id", ""))
+        if not device:
+            raise web.HTTPNotFound(text="Device not found")
+        if body.get("remember"):
+            device["trusted"] = True
+            device.pop("approved_until", None)
+        else:
+            device["approved_until"] = int(time.time()) + 15 * 60
+    save_persistent_state()
+    return web.json_response({"status": "ok"})
 
 
 async def list_files_handler(request: web.Request) -> web.Response:
@@ -157,10 +235,25 @@ async def upload_handler(request: web.Request) -> web.Response:
     target = safe_join(STATE["share_dir"], rel_path)
     os.makedirs(os.path.dirname(target), exist_ok=True)
 
+    device_id = request.headers.get("X-SuperShare-Device", "")
+    if device_id:
+        _touch_device(device_id, request.headers.get("X-SuperShare-Name", "Unknown device"),
+                      request.headers.get("X-SuperShare-Type", "Device"), request.remote)
+        with STATE["lock"]:
+            device = STATE["devices"].get(device_id, {})
+            approved = device.get("trusted", False) or device.get("approved_until", 0) > int(time.time())
+        if not approved:
+            raise web.HTTPForbidden(text="This device needs approval before sending files")
     print(f"[UPLOAD] Receiving -> {rel_path}")
-    with open(target, "wb") as f:
-        async for chunk in request.content.iter_chunked(CHUNK_SIZE):
-            await asyncio.to_thread(f.write, chunk)
-
+    received = 0
+    try:
+        with open(target, "wb") as f:
+            async for chunk in request.content.iter_chunked(CHUNK_SIZE):
+                await asyncio.to_thread(f.write, chunk)
+                received += len(chunk)
+    except Exception as exc:
+        record_transfer(device_id, os.path.basename(target), received, "failed", str(exc)[:200])
+        raise
     print(f"[SAVED]  {target}")
-    return web.json_response({"status": "ok"})
+    record_transfer(device_id, os.path.basename(target), received)
+    return web.json_response({"status": "ok", "bytes": received})

@@ -2,6 +2,68 @@ let currentPath = "";
 let currentItems = [];
 let selectedItems = new Map();
 let currentHostBrowsePath = "";
+const deviceIdKey = "supershare-device-id";
+let localDeviceId = localStorage.getItem(deviceIdKey);
+if (!localDeviceId) {
+  localDeviceId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^A-Za-z0-9_-]/g, "");
+  localStorage.setItem(deviceIdKey, localDeviceId);
+}
+const localDeviceName = localStorage.getItem("supershare-device-name") || (navigator.userAgentData?.platform || navigator.platform || "Browser") + " device";
+const localDeviceType = /Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : /Win/i.test(navigator.userAgent) ? "Windows" : /Mac/i.test(navigator.userAgent) ? "macOS" : "Browser";
+
+function deviceHeaders() {
+  return { "X-SuperShare-Device": localDeviceId, "X-SuperShare-Name": localDeviceName, "X-SuperShare-Type": localDeviceType };
+}
+
+async function refreshDevices() {
+  try {
+    const response = await fetch("/api/status", { headers: deviceHeaders() });
+    const data = await response.json();
+    const devices = data.devices || [];
+    window._lastDevices = devices;
+    document.getElementById("deviceCount").textContent = `${devices.length} device${devices.length === 1 ? "" : "s"}`;
+    const list = document.getElementById("deviceList");
+    list.replaceChildren();
+    if (!devices.length) list.innerHTML = '<li class="empty-state">Waiting for devices to connect…</li>';
+    devices.forEach(device => {
+      const li = document.createElement("li"); li.className = "device-row";
+      const main = document.createElement("div"); main.className = "device-main";
+      const avatar = document.createElement("span"); avatar.className = "device-avatar"; avatar.textContent = device.type === "Android" || device.type === "iOS" ? "📱" : "💻";
+      const info = document.createElement("div"); info.className = "device-info";
+      const title = document.createElement("strong"); title.textContent = device.name + (device.id === localDeviceId ? " (this device)" : "");
+      const meta = document.createElement("span"); meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${new Date(device.last_seen * 1000).toLocaleTimeString()}`;
+      info.append(title, meta); main.append(avatar, info);
+      const state = document.createElement("span"); state.className = `device-state ${device.online ? "online" : "offline"}`; state.textContent = device.online ? "Online" : "Offline";
+      li.append(main, state);
+      if (device.id !== localDeviceId) {
+        const controls = document.createElement("div"); controls.className = "device-controls";
+        if (!device.trusted && device.approved_until < Math.floor(Date.now() / 1000)) {
+          const approve = document.createElement("button"); approve.className = "btn-xs accent"; approve.textContent = "Allow 15 min"; approve.onclick = async () => { await fetch("/api/devices/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: device.id }) }); refreshDevices(); };
+          const trust = document.createElement("button"); trust.className = "btn-xs outline"; trust.textContent = "Trust"; trust.onclick = async () => { await fetch("/api/devices/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: device.id, remember: true }) }); refreshDevices(); };
+          controls.append(approve, trust);
+        }
+        const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename"; rename.onclick = async () => { const name = prompt("Device name:", device.name); if (name?.trim()) { await fetch("/api/devices/rename", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: device.id, name: name.trim() }) }); refreshDevices(); } };
+        const forget = document.createElement("button"); forget.className = "btn-xs outline"; forget.textContent = "Forget"; forget.onclick = async () => { if (confirm(`Forget ${device.name}?`)) { await fetch("/api/devices/forget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: device.id }) }); refreshDevices(); } };
+        controls.append(rename, forget); li.append(controls);
+      }
+      list.appendChild(li);
+    });
+    renderTransfers(data.transfers || []);
+  } catch (_) { /* keep the last rendered state while offline */ }
+}
+
+function renderTransfers(transfers) {
+  const list = document.getElementById("transferList"); list.replaceChildren();
+  if (!transfers.length) { list.innerHTML = '<li class="empty-state">No transfers yet.</li>'; return; }
+  [...transfers].reverse().forEach(t => {
+    const li = document.createElement("li"); li.className = "transfer-row";
+    const d = (window._lastDevices || []).find(item => item.id === t.device_id);
+    const name = document.createElement("strong"); name.textContent = t.filename;
+    const detail = document.createElement("span"); detail.textContent = `${d?.name || "Browser device"} · ${formatBytes(t.size || 0)} · ${new Date(t.timestamp * 1000).toLocaleString()}`;
+    const status = document.createElement("span"); status.className = `transfer-state ${t.status}`; status.textContent = t.status;
+    li.append(name, detail, status); list.appendChild(li);
+  });
+}
 
 function formatBytes(bytes) {
   if (bytes === 0) return "0 B";
@@ -230,6 +292,7 @@ async function uploadFiles(filesList) {
       const start = Date.now();
       xhr.open("POST", "/api/upload", true);
       xhr.setRequestHeader("X-File-Path", encodeURIComponent(dest));
+      Object.entries(deviceHeaders()).forEach(([key, value]) => xhr.setRequestHeader(key, value));
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           const p = Math.round((e.loaded / e.total) * 100);
@@ -239,17 +302,27 @@ async function uploadFiles(filesList) {
           if (sec > 0) spd.textContent = formatBytes(e.loaded / sec) + "/s";
         }
       };
-      xhr.onload = () => resolve();
-      xhr.onerror = () => reject();
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`Upload failed (${xhr.status})`));
+      xhr.onerror = () => reject(new Error("Network error while uploading"));
       xhr.send(file);
     });
   }
   fName.textContent = "✅ Upload Complete!";
   fetchDirectory(currentPath);
+  refreshDevices();
 }
 
 document.getElementById("fileInput").onchange = (e) => uploadFiles(e.target.files);
 document.getElementById("folderInput").onchange = (e) => uploadFiles(e.target.files);
+
+const dropZone = document.getElementById("dropZone");
+dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-active"); });
+dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-active"));
+dropZone.addEventListener("drop", e => { e.preventDefault(); dropZone.classList.remove("drag-active"); uploadFiles(e.dataTransfer.files); });
+document.addEventListener("paste", e => {
+  const files = Array.from(e.clipboardData?.files || []);
+  if (files.length) uploadFiles(files);
+});
 
 document.getElementById("newFolderBtn").onclick = async () => {
   const name = prompt("New folder name:");
@@ -260,3 +333,5 @@ document.getElementById("newFolderBtn").onclick = async () => {
 };
 
 fetchDirectory();
+refreshDevices();
+setInterval(refreshDevices, 5000);

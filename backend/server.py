@@ -9,6 +9,10 @@ from aiohttp import web
 from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR
 from .api_routes import (
     status_handler,
+    devices_handler,
+    rename_device_handler,
+    forget_device_handler,
+    approve_device_handler,
     list_files_handler,
     host_folders_handler,
     pick_host_gui_handler,
@@ -49,6 +53,10 @@ def create_app() -> web.Application:
 
     # REST & Streaming API
     app.router.add_get("/api/status", status_handler)
+    app.router.add_get("/api/devices", devices_handler)
+    app.router.add_post("/api/devices/rename", rename_device_handler)
+    app.router.add_post("/api/devices/forget", forget_device_handler)
+    app.router.add_post("/api/devices/approve", approve_device_handler)
     app.router.add_get("/api/list", list_files_handler)
     app.router.add_get("/api/host-folders", host_folders_handler)
     app.router.add_get("/api/pick-host-gui", pick_host_gui_handler)
