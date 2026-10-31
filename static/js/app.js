@@ -132,15 +132,31 @@ async function refreshNetworkInfo() {
     if (!response.ok) throw new Error(await responseError(response));
     const info = await response.json();
     addresses.replaceChildren();
-    const networkInterfaces = info.interfaces?.length ? info.interfaces : (info.addresses || []).map(address => ({ name: "Network adapter", address }));
-    const candidates = networkInterfaces.length ? networkInterfaces : [{ name: "Current connection", address: location.hostname }];
-    candidates.forEach(adapter => {
-      const scheme = info.scheme || location.protocol.replace(":", "");
-      const entry = document.createElement("code"); entry.textContent = `${adapter.name}: ${scheme}://${adapter.address}:${info.port}/`;
-      entry.title = adapter.netmask ? `IPv4 ${adapter.address} · mask ${adapter.netmask}${adapter.broadcast ? ` · broadcast ${adapter.broadcast}` : ""}` : adapter.address;
-      addresses.appendChild(entry);
-    });
-    preferredConnectionUrl = `${info.scheme || location.protocol.replace(":", "")}://${candidates[0].address}:${info.port}/`;
+    const connection = info.connection || null;
+    const nextConnectionUrl = connection?.url || "";
+    if (preferredConnectionUrl && preferredConnectionUrl !== nextConnectionUrl) {
+      document.getElementById("pairQrPanel").classList.add("hidden");
+      const qrToggle = document.getElementById("showPairQrBtn");
+      qrToggle.setAttribute("aria-expanded", "false"); qrToggle.textContent = "Show pairing QR";
+      const qrImage = document.getElementById("pairQrImage");
+      if (qrImage.dataset.objectUrl) { URL.revokeObjectURL(qrImage.dataset.objectUrl); delete qrImage.dataset.objectUrl; }
+    }
+    preferredConnectionUrl = nextConnectionUrl;
+    const copyButton = document.getElementById("copyConnectionBtn");
+    const qrButton = document.getElementById("showPairQrBtn");
+    copyButton.disabled = !preferredConnectionUrl;
+    qrButton.disabled = !preferredConnectionUrl;
+    if (connection) {
+      const card = document.createElement("div"); card.className = "hotspot-address-card";
+      const label = document.createElement("span"); label.className = "hotspot-kind"; label.textContent = connection.kind || "Wi-Fi / hotspot";
+      const url = document.createElement("code"); url.textContent = connection.url;
+      const adapter = document.createElement("span"); adapter.className = "hotspot-adapter"; adapter.textContent = `Using ${connection.name} · ${connection.address}`;
+      card.append(label, url, adapter); addresses.appendChild(card);
+    } else {
+      const empty = document.createElement("p"); empty.className = "no-hotspot";
+      empty.textContent = "No Wi-Fi or hotspot address was detected. Turn on the laptop hotspot, connect this laptop to Wi-Fi, then refresh.";
+      addresses.appendChild(empty);
+    }
     const security = document.getElementById("networkSecurity");
     const secure = info.scheme === "https";
     networkTlsEnabled = secure;
@@ -158,33 +174,57 @@ async function refreshNetworkInfo() {
           : "";
       }
     }
-    status.textContent = `Service reachable · TCP ${info.port} · Pairing required · Internet not required${extra}`;
+    status.textContent = connection
+      ? `${connection.kind} ready · Pairing required · Internet not required${extra}`
+      : `SuperShare is running on this laptop, but no Wi-Fi / hotspot address is available${extra}`;
     status.classList.remove("error");
+    status.classList.toggle("attention", !connection);
   } catch (error) {
     status.textContent = `Connection diagnostics unavailable: ${error.message}`;
-    status.classList.add("error");
+    status.classList.remove("attention"); status.classList.add("error");
   }
 }
 
 document.getElementById("copyConnectionBtn").addEventListener("click", async () => {
   try {
     if (!preferredConnectionUrl) await refreshNetworkInfo();
-    await navigator.clipboard.writeText(preferredConnectionUrl || location.href);
+    if (!preferredConnectionUrl) throw new Error("Turn on the laptop hotspot or connect this laptop to Wi-Fi first.");
+    await navigator.clipboard.writeText(preferredConnectionUrl);
     showNotice("Connection address copied. Open it on a device connected to this hotspot.", "success");
   } catch (_) { showNotice("Could not copy the connection address. Select and copy it from the Network section.", "error"); }
 });
 
 document.getElementById("showPairQrBtn").addEventListener("click", async () => {
   try {
+    const panel = document.getElementById("pairQrPanel");
+    const toggle = document.getElementById("showPairQrBtn");
+    if (!panel.classList.contains("hidden")) {
+      panel.classList.add("hidden"); toggle.setAttribute("aria-expanded", "false"); toggle.textContent = "Show pairing QR";
+      return;
+    }
+    if (!preferredConnectionUrl) throw new Error("No hotspot address is available yet. Turn on the hotspot and refresh.");
     const response = await fetch("/api/pairing-qr", { cache: "no-store" });
     if (!response.ok) throw new Error(await responseError(response));
-    const panel = document.getElementById("pairQrPanel");
     const image = document.getElementById("pairQrImage");
     if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
     image.dataset.objectUrl = URL.createObjectURL(await response.blob());
     image.src = image.dataset.objectUrl;
+    document.getElementById("pairingUrlText").textContent = response.headers.get("X-SuperShare-Pairing-URL") || preferredConnectionUrl;
     panel.classList.remove("hidden");
+    toggle.setAttribute("aria-expanded", "true"); toggle.textContent = "Hide pairing QR";
   } catch (error) { showNotice(error.message, "error"); }
+});
+
+document.getElementById("hidePairQrBtn").addEventListener("click", () => {
+  document.getElementById("pairQrPanel").classList.add("hidden");
+  const toggle = document.getElementById("showPairQrBtn"); toggle.setAttribute("aria-expanded", "false"); toggle.textContent = "Show pairing QR";
+});
+
+document.getElementById("copyPairingUrlBtn").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(document.getElementById("pairingUrlText").textContent);
+    showNotice("Pairing link copied. Open it on a device connected to this hotspot.", "success");
+  } catch (_) { showNotice("Could not copy the pairing link.", "error"); }
 });
 
 document.getElementById("copyTlsFingerprintBtn").addEventListener("click", async () => {

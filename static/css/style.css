@@ -311,3 +311,33 @@ body { padding: 18px 20px 110px; }
   .download-row > button { justify-self: start; }
   .selection-bar { bottom: 8px; }
 }
+.network-addresses { display: block; }
+.hotspot-address-card { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 7px 14px; padding: 14px 16px; border: 1px solid #31536d; border-radius: 10px; background: #131a20; }
+.hotspot-kind { color: #9bcaf0; font-size: .72rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+.hotspot-address-card code { grid-column: 1; grid-row: 2; padding: 0; border: 0; background: transparent; color: #f3f7fb; font-size: clamp(.9rem, 2vw, 1.12rem); overflow-wrap: anywhere; }
+.hotspot-adapter { grid-column: 1; color: var(--muted); font-size: .76rem; }
+.no-hotspot { margin: 0; padding: 14px 16px; border: 1px solid #6b4d18; border-radius: 9px; background: #211c12; color: #f4c76b; line-height: 1.5; }
+.network-status { padding-top: 5px; }
+.network-status.error { color: #fda4af; }
+.network-status.attention { color: #fbbf24; }
+.pair-qr { display: grid; gap: 16px; margin-top: 16px; padding: 18px; border-color: #31536d; background: #121619; }
+.pair-qr-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.pair-qr-heading h3 { margin: 0; font-size: 1.05rem; }
+.pair-qr-content { display: grid; grid-template-columns: minmax(190px,240px) minmax(0,1fr); align-items: center; gap: 22px; }
+.pair-qr-frame { display: grid; place-items: center; padding: 13px; border: 1px solid #d8dee5; border-radius: 10px; background: #fff; }
+.pair-qr img { display: block; width: min(100%, 232px); height: auto; aspect-ratio: 1; padding: 0; border-radius: 0; image-rendering: pixelated; }
+.pair-qr-help { display: grid; gap: 16px; min-width: 0; }
+.pair-qr-help ol { display: grid; gap: 9px; margin: 0; padding-left: 1.4rem; color: #d5dce3; font-size: .88rem; line-height: 1.45; }
+.pair-qr-help li::marker { color: #4da3e6; font-weight: 750; }
+.pairing-link { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: #191d21; }
+.pairing-link .eyebrow { margin: 0; }
+.pairing-link code { display: block; max-height: 72px; overflow: auto; color: #d5e9f8; font-size: .73rem; line-height: 1.4; overflow-wrap: anywhere; }
+.pairing-link button { justify-self: start; }
+button:disabled { cursor: not-allowed; opacity: .48; }
+@media (max-width: 620px) {
+  .hotspot-address-card { grid-template-columns: minmax(0,1fr); }
+  .hotspot-address-card code, .hotspot-adapter { grid-column: 1; grid-row: auto; }
+  .pair-qr-content { grid-template-columns: minmax(0,1fr); justify-items: center; }
+  .pair-qr-frame { width: min(100%, 268px); }
+  .pair-qr-help { width: 100%; }
+}

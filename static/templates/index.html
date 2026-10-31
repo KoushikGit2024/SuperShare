@@ -25,11 +25,17 @@
     </header>
 
     <section class="card network-card" id="networkSection" aria-labelledby="networkTitle">
-      <div class="section-heading"><div><span class="eyebrow">STEP 1 · CONNECT DEVICES</span><h2 id="networkTitle">Connect on the same Wi-Fi or hotspot</h2><p>Open one of these addresses on the other device. Internet access is not required.</p></div><div class="network-actions"><button id="copyConnectionBtn" class="btn-xs outline" type="button">Copy address</button><button id="copyTlsFingerprintBtn" class="btn-xs outline hidden" type="button">Copy TLS fingerprint</button><button id="showPairQrBtn" class="btn-xs accent hidden" type="button">Show pairing QR</button></div></div>
+      <div class="section-heading"><div><span class="eyebrow">STEP 1 · CONNECT DEVICES</span><h2 id="networkTitle">Connect to this hotspot</h2><p>Connect the other device to the same hotspot, then scan the QR code or open the address below. Internet access is not required.</p></div><div class="network-actions"><button id="copyConnectionBtn" class="btn-xs outline" type="button" disabled>Copy address</button><button id="copyTlsFingerprintBtn" class="btn-xs outline hidden" type="button">Copy TLS fingerprint</button><button id="showPairQrBtn" class="btn-xs accent hidden" type="button" disabled aria-expanded="false">Show pairing QR</button></div></div>
       <div id="networkAddresses" class="network-addresses" aria-live="polite">Checking local network addresses…</div>
       <div id="networkStatus" class="network-status">Checking SuperShare service</div>
       <div id="networkSecurity" class="network-security" aria-live="polite"></div>
-      <div id="pairQrPanel" class="pair-qr hidden"><img id="pairQrImage" alt="QR code for opening SuperShare and pairing on this hotspot"><p>Scan with the phone camera while it is connected to this hotspot. Confirm the verification phrase on both devices.</p></div>
+      <div id="pairQrPanel" class="pair-qr hidden" aria-labelledby="pairQrTitle">
+        <div class="pair-qr-heading"><div><span class="eyebrow">PAIR A BROWSER</span><h3 id="pairQrTitle">Scan to open SuperShare</h3></div><button id="hidePairQrBtn" class="btn-xs outline" type="button"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg> Close</button></div>
+        <div class="pair-qr-content">
+          <div class="pair-qr-frame"><img id="pairQrImage" alt="Pairing QR code. Scan it with a device connected to the same Wi-Fi or hotspot as this laptop."></div>
+          <div class="pair-qr-help"><ol><li>Connect your phone to the same Wi-Fi or hotspot as this laptop.</li><li>Scan the code and open the link.</li><li>Tap Pair with host, then compare the three-word phrase on both screens.</li></ol><div class="pairing-link"><span class="eyebrow">PAIRING LINK</span><code id="pairingUrlText">Loading pairing link…</code><button id="copyPairingUrlBtn" class="btn-xs outline" type="button">Copy pairing link</button></div></div>
+        </div>
+      </div>
     </section>
 
     <section class="card device-card" id="devicesSection">

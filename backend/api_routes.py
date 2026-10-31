@@ -60,11 +60,7 @@ def _public_transfers(limit=50):
         return sorted(items, key=lambda item: item.get("timestamp", item.get("updated_at", 0)))[-limit:]
 
 
-def _host_addresses():
-    return [item["address"] for item in _host_interfaces()]
-
-
-def _host_interfaces():
+def _all_host_interfaces():
     interfaces = []
     try:
         import psutil
@@ -84,7 +80,7 @@ def _host_interfaces():
     unique = {(item["name"], item["address"]): item for item in interfaces}
     interfaces = list(unique.values())
     if interfaces:
-        return sorted(interfaces, key=lambda item: (not item["address"].startswith("192.168.137."), item["name"], item["address"]))
+        return interfaces
     addresses = set()
     try:
         for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM):
@@ -105,18 +101,61 @@ def _host_interfaces():
     except OSError:
         pass
     return [{"name": "Detected network", "address": address, "netmask": "", "broadcast": ""}
-            for address in sorted(addresses, key=lambda value: (not value.startswith("192.168.137."), value))]
+            for address in sorted(addresses)]
+
+
+def _select_hotspot_interface(interfaces):
+    candidates = []
+    excluded_names = ("tailscale", "vpn", "vmware", "virtualbox", "hyper-v", "vethernet", "bluetooth", "docker", "wsl")
+    for item in interfaces:
+        try:
+            address = ipaddress.ip_address(item["address"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if address.version != 4 or address.is_loopback or address.is_link_local or address.is_multicast:
+            continue
+        name = str(item.get("name", "")).lower()
+        if any(marker in name for marker in excluded_names):
+            continue
+        hosted_hotspot = str(address) == "192.168.137.1" or ("local area connection*" in name and address.is_private)
+        wireless = any(marker in name for marker in ("wi-fi", "wifi", "wireless", "wlan"))
+        if not hosted_hotspot and not wireless:
+            continue
+        kind = "Windows hotspot" if hosted_hotspot else "Wi-Fi / hotspot"
+        rank = 0 if hosted_hotspot else 1 if wireless else 2
+        candidates.append((rank, {**item, "kind": kind}))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda entry: (entry[0], entry[1].get("name", "").lower(), entry[1]["address"]))
+    return [candidates[0][1]]
+
+
+def _host_interfaces():
+    return _select_hotspot_interface(_all_host_interfaces())
+
+
+def _host_addresses():
+    return [item["address"] for item in _host_interfaces()]
 
 
 async def network_handler(request: web.Request) -> web.Response:
+    interfaces = _host_interfaces()
+    connection = None
+    if interfaces:
+        selected = interfaces[0]
+        port = request.url.port or 80
+        scheme = request.scheme
+        connection = {"name": selected["name"], "kind": selected.get("kind", "Local network"),
+                      "address": selected["address"], "url": f"{scheme}://{selected['address']}:{port}/"}
     return web.json_response({
         "service": "SuperShare",
         "protocol_version": 1,
         "port": request.url.port or 80,
         "scheme": request.scheme,
         "ca_fingerprint": request.app.get("tls_info", {}).get("ca_fingerprint"),
-        "addresses": _host_addresses(),
-        "interfaces": _host_interfaces(),
+        "addresses": [connection["address"]] if connection else [],
+        "interfaces": interfaces,
+        "connection": connection,
         "connection_path": "/",
         "pairing_required": True,
         "internet_required": False,
@@ -136,10 +175,12 @@ async def pairing_qr_handler(request: web.Request) -> web.Response:
         from qrcode.image.svg import SvgPathImage
     except ImportError as exc:
         raise web.HTTPServiceUnavailable(text="QR generation is unavailable. Install project requirements and restart SuperShare.") from exc
-    code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=3)
+    code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
     code.add_data(pairing_url)
     svg = code.make_image(image_factory=SvgPathImage).to_string(encoding="unicode")
-    return web.Response(text=svg, content_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+    return web.Response(text=svg, content_type="image/svg+xml", headers={
+        "Cache-Control": "no-store", "X-SuperShare-Pairing-URL": pairing_url,
+    })
 
 
 async def diagnostics_handler(request: web.Request) -> web.Response:

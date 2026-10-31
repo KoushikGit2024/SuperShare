@@ -181,7 +181,7 @@ def main():
     phone_url = None
 
     if local_ips:
-        print("[PHONE] Available SuperShare addresses:")
+        print("[PHONE] Share this address with devices on the same hotspot or Wi-Fi:")
 
         interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
@@ -194,7 +194,7 @@ def main():
         print()
 
         if copy_to_clipboard(phone_url):
-            print(f"[OK] Primary phone URL copied to clipboard: {phone_url}")
+            print(f"[OK] Connection address copied to clipboard: {phone_url}")
         else:
             print("[INFO] Could not copy URL to clipboard.")
 
