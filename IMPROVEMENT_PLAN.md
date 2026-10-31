@@ -1,287 +1,111 @@
-# SuperShare Improvement Plan
-
-## Product direction
-
-Build SuperShare as a private, local-network transfer system that works when the laptop hotspot has no internet access. A user should be able to identify each nearby device, decide which devices may send or receive, choose a destination, and understand exactly what is happening to every transfer. Files should stream from their current source where the platform allows it; SuperShare should not require users to stage files in a special folder.
-
-The first supported setup is a Windows laptop host and an Android peer on the same hotspot. The Android client can send files from system shares or the document picker to the laptop and can browse/download approved laptop files to a phone document-provider destination. Direct peer-to-peer device routing is not implemented.
-
-## Current state
-
-- The primary runtime is `run.py` plus the `backend/` aiohttp application.
-- Both supported launch paths use the same backend and canonical `static/` UI; `app.server` is a compatibility import.
-- Browser profiles and the Android client have persistent random IDs, pairing credentials, phrase confirmation, approval, scoped read/send permissions, and host-side revocation. The Android identity and client are not device-validated.
-- The host chooses one receive root. Remote access is token and approval gated; host folder browsing and root changes are local-dashboard only.
-- Browser and Android sender paths use durable chunk sessions, per-chunk SHA-256 checks, server whole-file hashes, atomic publication, collision choices, resume on browser same-file reselect, cancellation, and seven-day abandoned-session cleanup.
-- The Android app handles Sharesheet single/multiple content URIs, the system document picker, and downloads to Android document providers without app staging copies.
-- The host announces itself over local UDP broadcast; the Android app listens and verifies the service handshake. A local dashboard QR opens the browser pairing flow; the Android app still uses a manually entered code. TLS and persistent background transfers remain open.
-- The dashboard includes device controls, connection addresses, free-space diagnostics, transfer state/progress/history filters, cancellation, browser drop/paste, and file browsing. Full accessibility and device-width review remains open.
-- Neither the Android app nor the frozen Windows package has been built and validated on target hardware. Real hotspot, restart/resume, large-file, and throughput measurements remain release gates.
-
-## Guiding principles
-
-1. **Local-first:** file contents stay on the local network and are never routed through a cloud relay.
-2. **Trust is explicit:** names and IP addresses are for display; pairing credentials establish identity.
-3. **Least privilege:** devices only receive access to approved roots and actions.
-4. **Transfer state is durable:** progress, cancellation, restart recovery, and errors are first-class data.
-5. **Source stays in place:** send from a share intent, document URI, picker handle, drag/drop, or browser picker without moving the original.
-6. **Honest interface:** show source, sender, receiver/host, destination, transport, current phase, progress, and outcome.
-7. **One implementation:** one backend, one frontend source tree, and documented API contracts.
-8. **UI standards:** solid dark surfaces only, no gradients, no emoji, inline SVG icon system, blue active actions, emerald success, amber waiting/warning, and rose failures.
-
-## Target architecture
-
-```text
-Android native app ── share intent / picker ──┐
-                                              │ local transfer protocol
-Browser dashboard ── HTTPS/local API ─────────┼── Windows host service
-                                              │      ├── pairing and device registry
-Other native peers ───────────────────────────┘      ├── transfer manager and durable queue
-                                                     ├── scoped storage roots
-                                                     └── discovery / QR fallback
-```
-
-### Components
-
-- **Host service:** owns pairing, authorization, transfer sessions, disk writes, device status, and local discovery. Start it without elevation by default. Request elevated permissions only for a clearly explained operation that requires them.
-- **Web dashboard:** host setup, connected devices, approval, transfer queue/history, destination roots, and browser fallback. Keep network APIs separate from presentation logic.
-- **Android client:** Android share target and document picker, paired-device selection, send/receive queue, notifications, and access to content URIs through Android’s permission model.
-- **Transport:** first use TCP over the same Wi-Fi or laptop hotspot. Add LAN discovery separately from transfer transport. Consider Wi-Fi Direct only after the shared hotspot path is reliable. Bluetooth is for pairing or small handshakes, not the large-file path.
-- **Local persistence:** SQLite for devices, roots, transfer sessions, chunk checkpoints, and history. Atomic config updates for service settings. Avoid rewriting the whole JSON state file on every heartbeat.
-
-## Detailed execution phases
-
-## Execution record
-
-- **Phase 0:** working defaults below are recorded and guide implementation.
-- **Phase 1:** implementation foundation is in place. Both launch paths use one aiohttp server; duplicated legacy handlers and assets are removed. The backend has SQLite state with legacy JSON import, persistent receive root, local-only host controls, pairing-code exchange with per-device token hashes, approval-gated remote file access, per-device read/write scopes, canonical path containment, atomic no-overwrite uploads, and standard-user startup without automatic Windows network changes.
-- **Phase 1 remaining:** validate on real Windows/hotspot/browser combinations and assess trusted TLS for local use. Pairing credentials currently travel over local HTTP, so use a trusted private hotspot. Phase 1 will be called complete after those checks are possible.
-- **Phase 2:** browser and native device identity, session-code pairing, phrase verification, scoped access, rename, trust, revoke, and forget are implemented. The local dashboard QR opens the browser pairing flow. Native-app QR scan/prefill, expiring one-time QR credentials, per-device roots, and real-client revocation validation remain open.
-- **Phase 2 remaining:** device identity and verification work for browser profiles and the Android app; the host can generate a local QR URL for browser pairing. Native app QR scanning/prefill, richer per-device root management, and real-client revocation validation remain open.
-- **Phase 3:** transfer sessions support skip/rename/replace/cancel collision choices, two concurrent sessions maximum, durable chunk offsets, resume on same-file reselect, retry after checksum failure, cancellation, per-chunk SHA-256 re-verification, full-file hash recording, seven-day abandoned-job cleanup, and history for completed/failed sends and receives. Real interruption/restart and large-file validation remains outstanding.
-- **Phase 4:** host address candidates include adapter name, IPv4 address, netmask, and broadcast address when `psutil` can read them. The connection panel copies candidate URLs and generates a local QR for browser pairing; the host broadcasts its actual selected port; Android listens and verifies the protocol handshake before offering an address. Real hotspot/firewall validation remains open.
-- **Phase 5:** section navigation, active transfer progress/history filters, cancellation, collision prompts, route summary, live announcements, local free-space status, and host download history are present. Upload preflight rejects insufficient disk space. Full screen-reader, keyboard, phone-width and accessibility review remains open.
-- **Phase 6:** the Android project registers as a Sharesheet target, offers the system document picker, pairs and verifies the phrase, handles destination collisions, browses the host's approved share, and streams single/multiple `content://` sources or host downloads directly between providers without staging copies. Foreground notifications, provider resume, unknown-size provider handling, partial-download cleanup, and device validation remain open.
-- **Phase 7:** a real-network upload benchmark CLI reports elapsed time, throughput, and client/server SHA-256 in JSON. Benchmarks have not been run; tuning and multi-device/load measurements remain open.
-- **Phase 8:** a Windows PyInstaller build script, stable frozen-app data directory with one-time sidecar DB migration, local storage/connection diagnostics, and release checklist are added. Packaging, firewall, migration, clean install, upgrade, rollback, and uninstall still require Windows validation.
-
-## Phase 0 decisions and working defaults
+# SuperShare Web-Only Improvement Plan
 
-These defaults let implementation proceed without blocking on product questions. They can be changed before the first native release:
-
-- **Initial platforms:** Windows laptop host and Android client; browser UI is a fallback and host manager.
-- **Initial topology:** phone and laptop connect to the same laptop hotspot. Internet is optional and must not be required. QR/manual address is the fallback if local discovery is unavailable.
-- **Initial direction:** Android-to-laptop send and approved laptop-share-to-Android download work over the host service. Direct device-to-device peer routing is a later addition.
-- **Peer capacity:** design for eight known devices and two concurrent transfers initially; make both configurable after benchmarks.
-- **File size:** target files up to 100 GB, matching the current streaming goal, subject to filesystem free space and Android provider capabilities.
-- **Receive location:** one explicitly selected host receive root. Do not grant arbitrary-drive browsing to remote peers.
-- **Trust:** new devices require host approval. “Trust” is an explicit persistent choice; temporary approval expires after 15 minutes.
-- **Collisions:** ask before replacing. Never silently overwrite an existing file.
-- **Folder behavior:** stream a manifest and files; create ZIP only when the user chooses archive/download.
-- **User-visible route:** always state source device, receiver/host, destination, transport, progress, and final outcome.
-- **UI:** keep the user's zero-gradient, zero-emoji, inline-SVG and semantic status-color rules.
+## Product scope
 
-### Phase 0 — Define behavior and acceptance criteria
+SuperShare is a browser-operated local-network file-sharing website. A laptop runs the host service and serves the web interface; other devices connect using a browser on the same Wi-Fi or hotspot. No companion Android, desktop, or other client app is required. The host service is still required to provide the local web site, manage permissions, and receive files.
 
-**Work**
+Files are selected by the user through the browser file or folder picker, drag-and-drop, or paste. The browser reads those selected files from their existing locations and streams them to the host; the site does not create a separate source copy. Browser security prevents silent access to arbitrary paths and prevents a normal web page from registering as a system share-sheet target across all browsers.
 
-- Confirm initial platform scope: Windows host plus Android client; browsers as fallback.
-- Define maximum expected peer count, concurrent transfers, file sizes, and whether receiving on the phone is required in the first release.
-- Define default destination roots, overwrite behavior, trust duration, and whether every incoming transfer needs approval.
-- Define hotspot assumptions and a manual QR/code route when multicast discovery is blocked.
-- Establish the UI language for device states and transfer states.
+The initial topology routes transfers through the laptop host. Direct browser-to-browser peer transfer, cloud relays, and remote internet access are outside the first release scope.
 
-**Acceptance**
+## Current implementation
 
-- A user can explain whether the current direction is phone-to-laptop or laptop-to-phone before starting a transfer.
-- Offline operation is verified with mobile data/internet disabled.
+- `run.py` starts the canonical aiohttp server in `backend/`; the website is served from `static/`.
+- A laptop-local dashboard manages the shared receive root, device approvals, transfer history, and network information.
+- Browser profiles receive local identities and pair with a session code plus a three-word verification phrase. The host grants read and/or send access and can revoke or forget devices.
+- A paired browser can browse the approved host root, download files, and upload files/folders after explicit browser selection.
+- Upload sessions use bounded chunks, per-chunk SHA-256 checks, server-side re-verification, whole-file hashing, collision handling, cancellation, and resume after the same file is selected again in the same browser profile.
+- The server advertises a QR code and local adapter URLs. Browser clients use the QR/manual URL; web pages cannot listen to the host's UDP broadcast.
+- Optional local HTTPS is available with `python run.py --https`; browsers must trust the generated local CA. HTTP remains the compatibility default and does not encrypt credentials or file data.
+- The host uses one configured receive root. Remote clients cannot change it.
 
-### Phase 1 — Consolidate and secure the current foundation
+## Remaining work by priority
 
-**Work**
+### 1. Documentation and scope consistency
 
-- Retire the obsolete `app/` server implementation or make it a thin compatibility launcher. Keep a single canonical UI and backend; remove duplicated assets after confirming there are no supported launch paths that depend on them.
-- Replace ad hoc global mutable state with service objects and a SQLite data layer, keeping aiohttp handlers thin.
-- Replace prefix-based path checks with canonical path containment checks that handle Windows case folding, drive roots, and symlinks.
-- Restrict host browsing to explicit share roots. Add an allowlist of roots and read/write capabilities per paired device. Do not expose arbitrary drives by default.
-- Require a pairing token for all mutating endpoints. Remove legacy upload paths that silently bypass approval when device headers are absent.
-- Store tokens hashed at rest, support revocation, validate request size/path/name, and prevent filename/path header traversal.
-- Stage incoming writes to unique `.partial` files; flush and atomically rename only after success. Preserve an existing file on failed/aborted upload.
-- Replace broad administrator startup/elevation with least-privilege startup; request narrowly scoped firewall setup only when the user chooses network sharing.
-- Add structured logs with transfer/device IDs and redaction for sensitive paths where appropriate.
+- Keep README, run guide, protocol, improvement plan, UI copy, and release checklist consistently web-only.
+- Explain host versus browser responsibilities, source-file access limits, transfer routing, HTTPS trust, and hotspot/firewall setup.
+- Remove obsolete app-only directions and avoid promising browser capabilities that the platform does not provide.
 
-**Acceptance**
+**Acceptance:** users can start, pair, transfer, resume, and troubleshoot using only the host command and a browser.
 
-- Unpaired clients cannot list private roots, upload, delete, or change share roots.
-- Traversal paths and symlink escapes are rejected.
-- A failed write never replaces a completed destination file.
-- Exactly one server/UI implementation is documented as supported.
+### 2. Browser and network validation
 
-### Phase 2 — Device identity, pairing, and manageability
+- Validate the laptop host with desktop and mobile browsers over a hotspot with internet access disabled.
+- Cover file/folder selection, multiple files, drag/drop, paste, downloads, large transfers, conflicts, cancellation, low disk, connection loss, reload, resume, and host restart.
+- Test hotspot client isolation, Windows Firewall, adapter changes, QR/manual URLs, HTTP, and optional HTTPS trust.
+- Record browser/OS versions, network topology, file sizes, results, hashes, and actionable failures.
 
-**Work**
+**Acceptance:** a release matrix shows successful and recovered-failure flows for each supported environment. Anything not physically exercised remains marked unverified.
 
-- Give the host a stable identity and each installed client a cryptographically random identity plus secret credential.
-- Pair with an expiring QR code or short code. Show the same short verification phrase on both devices and require explicit confirmation.
-- Represent device state as `discovered`, `pairing`, `pending_approval`, `paired`, `online`, `offline`, `revoked`.
-- Add device details: user label, platform/model where available, network address, last seen, trust status, permitted direction, allowed roots, and last transfer.
-- Add actions: rename, approve once, trust, revoke, forget, restrict send/receive, and clear credentials.
-- Ensure a device reappearing after an ID claim cannot inherit another device’s trust.
+### 3. Device identity and onboarding
 
-**Acceptance**
+- Make clear that device identity is browser-profile identity, not guaranteed physical hardware identity.
+- Show editable device names, browser/platform, last-seen time, pair/approval state, access scope, and recent transfer.
+- Make one-time approval, persistent trust, revoke, forget, and permission changes understandable and promptly effective.
+- Keep QR and manual URL onboarding reliable when hotspot client isolation or firewalls interfere.
 
-- A host can distinguish two identical phone models by verified label and pairing phrase.
-- Revocation blocks the old device credential immediately.
-- Approval duration and trust status are visible and auditable.
+**Acceptance:** the host can identify which browser profile is requesting access and can revoke its credentials immediately.
 
-### Phase 3 — Robust transfer engine
+### 4. Transfer UX and observability
 
-**Work**
+- Replace native browser `prompt()` / `confirm()` calls with accessible in-page dialogs.
+- Show each file's source label, sender, destination, phase, bytes, percent, throughput, elapsed time, and reliable ETA.
+- Preserve actionable states for queued, waiting for approval, connecting, transferring, verifying, complete, failed, cancelled, and interrupted.
+- Explain that resume requires selecting the same file again in the same browser profile.
+- Show completed destination and recovery actions; make failures and empty/loading/disconnected states clear.
+- Keep all high-impact actions keyboard accessible and announce state changes without overwhelming screen readers.
 
-- Define a versioned transfer protocol with a create-session request, manifest, chunk upload/download, status, cancel, resume, and completion endpoints.
-- Persist sessions and chunk checkpoints. Use bounded buffers, configurable chunk size, and per-peer/global concurrency limits.
-- Calculate a cryptographic checksum while streaming; verify before marking complete.
-- Resume from acknowledged offsets after Wi-Fi interruption or host restart. Keep partial files under managed temporary names and expire abandoned sessions according to a clear policy.
-- Add collision modes: ask, rename, skip, replace. Never silently overwrite.
-- Add cancellation and retry with clear state transitions: `queued`, `awaiting_approval`, `connecting`, `transferring`, `verifying`, `completed`, `failed`, `cancelled`, `interrupted`, `paused`.
-- Record sender, receiver, source display name/URI type, destination root and relative path, transport, byte counts, rate samples, timestamps, checksum result, and actionable failure reason.
-- Stream folder manifests and file contents individually; make ZIP creation an explicit archive/download operation rather than a prerequisite for folder transfer.
+**Acceptance:** a user can explain the state and next action for every active or failed transfer without reading logs.
 
-**Acceptance**
+### 5. Security and privacy
 
-- Disconnecting Wi-Fi mid-transfer can resume without retransmitting completed chunks.
-- A checksum mismatch is detected and the item is not marked complete.
-- Cancel, retry, collision choices, and service restart behave predictably.
+- Review every API route for pairing, cookie, role, and host-dashboard enforcement, including mutations and downloads.
+- Review CSRF protections, cookie lifetime/scope, pairing-code brute-force controls, credential revocation, and path/symlink containment.
+- Exercise optional TLS on real browsers, including untrusted CA, wrong host, expired/replaced certificate, and key regeneration.
+- Document local state and history retention, partial-file expiry, logs, and credential reset behavior.
+- Make the HTTP encryption limitation visible and keep local-only firewall guidance precise.
 
-### Phase 4 — Local discovery and hotspot connection experience
+**Acceptance:** a route-by-route access review and negative-access checks show unauthorized clients cannot read, write, delete, or alter host settings.
 
-**Work**
+### 6. Transfer reliability and storage
 
-- Detect active adapters and show the laptop hotspot/Wi-Fi address candidates rather than guessing one IP.
-- Advertise the host on the local network using a supported service-discovery protocol where available; support QR/code connection using an explicit address and one-time pairing secret.
-- Report discovery permission or multicast limitations and explain the manual path.
-- Probe reachability and service version before showing a peer as ready.
-- Display connection type, signal/reachability status where available, and measured throughput after a small safe probe.
-- Add reconnect behavior and remove stale discovered entries after a documented timeout.
+- Validate resume on browser reload, Wi-Fi interruption, host restart, receive-root change, and expired sessions.
+- Ensure cancel, retry, partial cleanup, and root changes cannot publish incomplete or mismatched data.
+- Verify collision behavior and that replace preserves the old file until the new upload verifies.
+- Cover zero-byte, very large, unusual-name, duplicate-name, nested-folder, and low-space cases.
+- Improve host storage errors and make active/retained partial storage visible.
 
-**Acceptance**
+**Acceptance:** each interrupted job either resumes safely or ends with a clear error and documented cleanup; completed files pass checksum validation.
 
-- Android finds the laptop on the same hotspot without internet, or connects with the QR fallback when multicast is unavailable.
-- A device is not shown as transfer-ready until a protocol handshake succeeds.
+### 7. Performance and capacity
 
-### Phase 5 — Frontend information architecture and interaction design
+- Run `tools/benchmark_transfer.py` over loopback, Wi-Fi, and laptop-hotspot paths with small, many, and multi-gigabyte files.
+- Compare client/server SHA-256, throughput, CPU, memory, disk I/O, and UI responsiveness.
+- Measure concurrent browsers and tune chunk size/concurrency only from results.
+- Document supported practical file size and peer counts; avoid claiming unmeasured 100 GB support.
 
-**Navigation**
+**Acceptance:** saved benchmark results define supported ranges and show no unbounded memory growth or UI freeze.
 
-- **Overview:** local network state, host address/QR, current receive destination, and a compact active queue.
-- **Devices:** nearby/paired/offline sections, identity and trust controls, permissions, and last activity.
-- **Transfers:** active queue, queued jobs, history, filters, per-transfer detail, pause/resume/cancel/retry.
-- **Storage:** explicit receive roots, capacity, destination selection, collision defaults, and open-location actions.
-- **Settings:** device name, hotspot guidance, discovery mode, security defaults, and diagnostics.
+### 8. Accessibility, responsive UI, and release
 
-**Interaction requirements**
+- Review phone, tablet, desktop, and landscape layouts.
+- Check keyboard-only flow, screen-reader names and announcements, focus order, contrast, dialogs, and progress semantics.
+- Keep solid surfaces, zero gradients, zero emoji, SVG icons, and the established semantic status colors.
+- Validate Windows packaging, clean installation, upgrade, rollback, data migration, uninstall, firewall guidance, and cache/build artifact ignores.
 
-- Before sending, show a confirmation summary: source device, selected receiver, file count/size, destination path, collision policy, network route, and whether approval is needed.
-- During sending, show one row per file with phase, transferred/total bytes, percent, current and average speed, elapsed time, estimated remaining time when reliable, and pause/cancel controls.
-- After completion, show a stable result with destination and actions to open, copy location, or send again. Keep failures visible until dismissed or retried.
-- Explain permission prompts in context. Never imply a browser-only picker can access arbitrary apps or register a system share target.
-- Use explicit states for no devices found, hotspot disconnected, awaiting approval, reconnecting, unsupported URI, insufficient space, name collision, verification failure, and host unavailable.
-- Keep destructive operations in a confirmation dialog with exact item count and names; provide undo for reversible moves/deletes if the storage model supports it.
-- Keep keyboard focus visible, provide accessible labels and live regions, and ensure touch targets work on phones.
-- Preserve the agreed UI constraints: zero gradients, zero emoji, consistent inline SVG icons, solid surfaces, blue active state, emerald success, amber attention, rose error.
+**Acceptance:** primary workflows work at phone and desktop widths and by keyboard, and a clean Windows release can upgrade/recover without losing user state.
 
-**Acceptance**
+## Explicitly deferred
 
-- At every stage, the user can answer: who is sending, to whom, from where, to where, what state it is in, and what action is available next.
-- State changes are announced to assistive technology and are understandable without color alone.
+- Direct peer-to-peer transfer without the laptop host.
+- Universal OS share-sheet integration or silent arbitrary-path access from a browser.
+- Guaranteed background transfer after closing/suspending the browser tab.
+- Cloud relay, internet-facing hosting, Wi-Fi Direct, Bluetooth file transfer, and multi-hop routing.
+- Multiple receive roots or per-device destination roots.
 
-### Phase 6 — Android native share and receive experience
+These can be reconsidered only with a clear product need and a browser-compatible security design.
 
-**Work**
+## Validation record
 
-- Create an Android app with Android Sharesheet intent filters for single and multiple files and supported content types.
-- Read shared `content://` URIs under granted permissions and stream them directly to the paired receiver without copying them into an app staging folder.
-- Show paired devices, availability, receive-root choice if applicable, transfer confirmation, and queue progress in the share flow.
-- Use Android’s system document picker for files that are not shared through another app. Preserve persisted URI permissions only when required and disclose that behavior.
-- Add foreground transfer service/notification for long sends, retry after network restoration, and Android receive support using scoped storage/document-provider APIs.
-- Handle providers that cannot seek: either spool only when necessary with clear disk-space checks, or report that the source cannot resume and offer restart.
-
-**Acceptance**
-
-- From a camera/gallery/file app, choose Share → SuperShare → a paired laptop; no manual file staging is required.
-- The original file remains at its original URI/location.
-- Large transfers continue with a visible OS notification when the app is backgrounded.
-
-### Phase 7 — Performance and reliability
-
-**Work**
-
-- Benchmark laptop hotspot, home Wi-Fi, and representative Android devices with small files, many files, and multi-gigabyte files.
-- Measure throughput, CPU, memory, battery, time to first byte, retransmission/resume time, and UI responsiveness.
-- Tune chunk size and parallelism from measurements; keep bounded memory and avoid overloading phone storage/CPU.
-- Use streaming hash calculation and optional fast integrity modes only if the threat/reliability model permits.
-- Add disk-space preflight, low-space warnings, thermal/battery handling where available, and safe cleanup for stale partials.
-- Consider a more efficient transport only if measurements justify it; TCP over Wi-Fi remains the baseline.
-
-**Acceptance**
-
-- Publish benchmark conditions and measured throughput for supported configurations.
-- Memory use remains bounded for large files and many-file batches.
-
-### Phase 8 — Packaging, diagnostics, and release readiness
-
-**Work**
-
-- Package the Windows host with a stable data directory, versioned config migration, clear startup/shutdown, and update/rollback strategy.
-- Provide firewall setup/cleanup controls with least privilege and a visible explanation of the local network exposure.
-- Add a diagnostics view that checks host IP, hotspot reachability, port binding, firewall state, pairing state, free space, and recent failures without exposing file contents.
-- Document setup without internet, the QR fallback, where received files go, trust/revoke behavior, and platform limits.
-- Export a redacted diagnostic bundle only with explicit user action.
-
-**Acceptance**
-
-- A new user can install, pair, send, receive, recover an interrupted transfer, revoke a device, and uninstall without manually editing files or firewall settings.
-
-## Proposed first release scope
-
-1. Consolidate to one aiohttp server and one canonical UI.
-2. Secure device pairing and scoped receive roots before expanding LAN access.
-3. Implement resumable, verifiable phone-to-laptop transfers and a proper active transfer queue.
-4. Add Android share-sheet sending from content URIs.
-5. Add automatic local discovery with QR/manual fallback.
-6. Keep the browser dashboard as a host manager and fallback client.
-
-Defer peer-to-peer Wi-Fi Direct, Bluetooth file transfer, multi-hop routing, cloud relay, and broad arbitrary-drive sharing until the core single-hotspot flow is secure and measured.
-
-## Suggested module layout
-
-```text
-backend/
-  api/                 # HTTP/WebSocket handlers and request validation
-  services/            # pairing, discovery, transfer orchestration
-  storage/             # SQLite repository, roots, atomic file operations
-  protocol/            # versioned transfer message and manifest types
-  security/            # credentials, permissions, path policy
-frontend/
-  src/                 # one dashboard implementation and inline icon set
-android/               # native share target and transfer client
-docs/                  # protocol, threat model, setup, decisions
-```
-
-## Cross-cutting verification strategy
-
-- Unit checks for path containment, permissions, protocol validation, transfer state transitions, persistence migration, and collision policy.
-- Integration checks for pairing, approval expiry, revoke, upload/download, checksum mismatch, resume, cancel, server restart, and host folder changes.
-- Network checks with no internet, hotspot client isolation enabled/disabled, IP changes, and interrupted Wi-Fi.
-- Android checks for single/multiple content URIs, transient URI grants, backgrounding, insufficient space, provider seek limitations, and notification actions.
-- UI checks for phone and desktop widths, keyboard-only use, screen-reader announcements, accessible contrast, empty/loading/error/reconnect states, and the no-emoji/no-gradient design requirements.
-- Security review before exposing any arbitrary host path or trusting persistent device credentials.
-
-## Product decisions to record
-
-- Does the first native release need laptop-to-phone sending as well as phone-to-laptop?
-- Should paired devices auto-accept, or should the receiver approve every transfer by default?
-- Which host folders may be receive roots, and should a device have separate roots per sender?
-- What is the maximum file size and how long should interrupted partial transfers be retained?
-- Should history store absolute paths, relative paths, or a privacy-preserving display path?
-- What operating systems beyond Windows and Android are in the initial support promise?
+Keep a release record with host OS/build, browser and version, client OS, hotspot/router, internet-disabled result, transfer size/type, measured throughput, checksum result, interruptions attempted, and remaining failures. Separate automated/local checks from tests that require physical devices or a real hotspot.

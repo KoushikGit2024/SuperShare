@@ -2,32 +2,45 @@
 
 ## Start the laptop host
 
-Run from the project directory:
+Install requirements and start the local host from the project directory:
 
 ```powershell
+python -m pip install -r requirements.txt
 python run.py
 ```
 
-SuperShare runs with normal user permissions. The terminal shows the current session pairing code and local URLs. Keep the host process open while transferring.
+The terminal prints a session pairing code and local browser URLs. Keep the host process running while devices connect and transfer files. To enable optional HTTPS, run `python run.py --https`; each browser must trust the generated local CA before using the HTTPS address.
 
-## Connect a phone on the laptop hotspot
+## Connect another device using its browser
 
-1. Turn on the laptop hotspot and connect the phone to it. Internet access is not required.
-2. Open the laptop URL printed by SuperShare in the phone browser.
-3. Choose **Pair with host** and enter the code from the laptop terminal.
-4. Compare the three-word phrase shown on the phone and laptop, then confirm on the phone.
-5. On the laptop dashboard, grant read, send, or both for 15 minutes, or trust the device with both permissions.
+1. Connect the laptop and client device to the same Wi-Fi or laptop hotspot. Internet access is not needed for local transfers.
+2. On the laptop dashboard, show the QR code or copy the address for the relevant network adapter.
+3. Open that address in the other device's browser.
+4. Choose **Pair with host**, enter the pairing code shown in the laptop terminal, compare the verification phrase, and confirm it.
+5. On the laptop dashboard, approve the browser with read access, send access, or both. Temporary approval lasts 15 minutes; trusted access persists until revoked.
 
-The phone can access shared files and upload only within the permissions granted. Restarting SuperShare rotates the session pairing code; already paired device credentials remain stored until forgotten or revoked.
+The client identity belongs to that browser profile. Ordinary web pages cannot listen to UDP broadcasts, install a universal system share target, or silently read arbitrary device paths.
 
-## Choose the receive folder
+## Choose the host receive folder
 
-Use the laptop dashboard's host-folder browser or native folder picker to set the active receive root. Remote clients can only access paths inside this selected root. A file that already exists at the destination is preserved; the incoming upload reports a conflict rather than replacing it.
+Use **Browse host folders** or **Open PC folder picker** from the laptop dashboard to select the receive root. Remote browsers can access only the approved root and permissions. Existing files are protected by collision handling; uploads are verified before publication.
+
+## Send and receive
+
+- To send to the laptop, select files or a folder, drag files into the drop area, or paste copied files. The browser reads the selected originals and streams them; SuperShare does not create an extra source copy.
+- If a connection drops, reopen the site in the same browser profile and select the same source file again to resume acknowledged chunks.
+- To receive from the laptop, browse the shared files and download the chosen item. Browser download behavior and save-location prompts depend on browser settings.
 
 ## Network troubleshooting
 
-SuperShare does not automatically change Windows network profiles or firewall rules. If the phone cannot connect, check that both devices are on the same hotspot, that hotspot client isolation is disabled, and that Windows Firewall allows the configured TCP port on the private hotspot network. If automatic discovery is blocked, allow UDP port 8766 or use the address shown in the dashboard.
+SuperShare does not change Windows network profiles or firewall rules. If a client cannot connect, confirm both devices use the same hotspot, client isolation is disabled, and Windows Firewall permits the configured TCP port on the private network. Use another listed adapter URL if the first one is unreachable. UDP port `8766` is a host announcement only; browser pages cannot consume it, so QR/manual URLs are the web onboarding path.
+
+HTTP is the default and leaves pairing credentials and file data unencrypted on the local network. Use a trusted private network or enable HTTPS and install/trust the generated local CA in each browser. Do not bypass a browser certificate warning without verifying the certificate fingerprint printed by the host.
 
 ## Known limitations
 
-The browser interface sends files to the laptop host. Interrupted uploads can resume from acknowledged chunks by selecting the same file again in the same browser profile. The Android client project is under `android/`; its Sharesheet and document picker stream originals to the laptop host, and its browser lets you save approved laptop files into a phone document-provider destination. Direct peer-to-peer sending and background-resumable Android transfers are not implemented. Pairing currently uses local-network HTTP, so use a trusted private network.
+- No separate client app is required or included; clients use browsers.
+- Browser access to source files requires explicit picker, drag/drop, or paste permission. Universal OS share-sheet registration and silent access to arbitrary paths are browser-restricted.
+- Resume requires reselecting the same file in the same browser profile. Closing or suspending a tab may interrupt active work.
+- Transfers route through the laptop host; direct device-to-device transfer is not implemented.
+- The host uses one configured receive root. Per-device destinations and internet/cloud relay are out of scope.

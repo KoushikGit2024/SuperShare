@@ -10,7 +10,7 @@ The host uses adapter names, IPv4 addresses, netmasks, and directed broadcast ad
 
 ## Pairing
 
-`POST /api/pair` accepts a session code and a client-generated device ID, label, and platform. The host returns a device credential as a strict, HTTP-only cookie and a three-word verification phrase. The client compares that phrase with the host dashboard and calls `POST /api/devices/confirm-pairing`. The laptop user then grants send permission. The session code rotates when the server restarts; stored device credentials remain until revoked or forgotten.
+`POST /api/pair` accepts a session code and a browser-generated profile ID, label, and platform. The host returns a device credential as a strict, HTTP-only cookie and a three-word verification phrase. The user compares that phrase with the laptop dashboard and the browser calls `POST /api/devices/confirm-pairing`. The laptop user then grants read and/or send permission. The session code rotates when the server restarts; stored browser credentials remain until revoked or forgotten.
 
 ## Upload sessions
 
