@@ -289,7 +289,10 @@ def _touch_device(device_id, name, device_type, remote):
     persist = False
     with STATE["lock"]:
         old = STATE["devices"].get(device_id, {})
-        display_name = _safe_display_text(old.get("display_name", "") or name, 80, "Unknown device")
+        saved_display_name = old.get("display_name", "")
+        if isinstance(saved_display_name, str) and "\uFFFD" in saved_display_name and "\uFFFD" not in name:
+            saved_display_name = ""
+        display_name = _safe_display_text(saved_display_name or name, 80, "Unknown device")
         persist = (not old or old.get("name") != display_name
                    or old.get("type") != device_type
                    or old.get("ip") != (remote or old.get("ip", ""))
