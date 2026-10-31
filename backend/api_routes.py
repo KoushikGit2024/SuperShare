@@ -42,6 +42,12 @@ def _safe_display_text(value, limit, fallback):
     return text.strip()[:limit] or fallback
 
 
+def _device_header_text(request, header, fallback):
+    # Custom HTTP headers are not a portable place for raw Unicode. The browser
+    # percent-encodes profile labels; decode both new clients and legacy ASCII.
+    return urllib.parse.unquote(request.headers.get(header, fallback), encoding="utf-8", errors="replace")
+
+
 def _public_transfers(limit=50):
     with STATE["lock"]:
         items = list(STATE["transfers"])
@@ -161,8 +167,8 @@ async def status_handler(request: web.Request) -> web.Response:
         existing = STATE["devices"].get(device_id, {})
         may_update_identity = local_request or not existing.get("token_hash") or _authenticated_device(request, existing)
     if device_id and may_update_identity:
-        _touch_device(device_id, request.headers.get("X-SuperShare-Name", "Unknown device"),
-                      request.headers.get("X-SuperShare-Type", "Device"), request.remote)
+        _touch_device(device_id, _device_header_text(request, "X-SuperShare-Name", "Unknown device"),
+                      _device_header_text(request, "X-SuperShare-Type", "Device"), request.remote)
     if local_request and device_id:
         changed = False
         with STATE["lock"]:
@@ -208,8 +214,8 @@ async def upload_permission_handler(request: web.Request) -> web.Response:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         raise web.HTTPBadRequest(text="Invalid device identity")
     if may_update_identity:
-        _touch_device(device_id, request.headers.get("X-SuperShare-Name", "Unknown device"),
-                      request.headers.get("X-SuperShare-Type", "Device"), request.remote)
+        _touch_device(device_id, _device_header_text(request, "X-SuperShare-Name", "Unknown device"),
+                      _device_header_text(request, "X-SuperShare-Type", "Device"), request.remote)
     if local_request:
         return web.json_response({"allowed": True, "approved": True, "paired": True,
                                   "permissions": {"read": True, "write": True}, "message": "Ready to send to this host"})

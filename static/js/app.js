@@ -30,7 +30,7 @@ document.getElementById("sourceProfileId").textContent = `Profile ID · ${localD
 const localDeviceType = `${clientPlatform} browser · ${browserName}`;
 
 function deviceHeaders() {
-  return { "X-SuperShare-Device": localDeviceId, "X-SuperShare-Name": localDeviceName, "X-SuperShare-Type": localDeviceType };
+  return { "X-SuperShare-Device": localDeviceId, "X-SuperShare-Name": encodeURIComponent(localDeviceName), "X-SuperShare-Type": encodeURIComponent(localDeviceType) };
 }
 
 function icon(name, className = "icon") {
@@ -253,6 +253,7 @@ async function refreshDevices() {
     document.getElementById("showPairQrBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("copyTlsFingerprintBtn").classList.toggle("hidden", !data.host_dashboard || !networkTlsEnabled);
     document.getElementById("destinationName").textContent = data.host_name || "This host";
+    window._shareRoot = data.share_root || "";
     document.getElementById("destinationPath").textContent = data.share_root ? `${data.share_root}${currentPath ? `\\${currentPath.replaceAll("/", "\\")}` : ""}` : "Pair and get host approval to view the destination";
     const canUpload = await checkUploadPermission();
     const devices = data.devices || [];
@@ -375,27 +376,48 @@ document.getElementById("nameBrowserBtn").addEventListener("click", async () => 
 function renderTransfers(transfers) {
   const list = document.getElementById("transferList"); list.replaceChildren();
   const filter = document.getElementById("transferFilter")?.value || "all";
-  const filtered = [...transfers].reverse().filter(t => filter === "all" || (filter === "active" ? ["queued", "transferring", "interrupted", "verifying"].includes(t.status) : t.status === filter));
+  const activeStates = ["queued", "transferring", "interrupted", "verifying"];
+  const filtered = [...transfers].filter(t => !String(t.device_id || "").startsWith("benchmark-"))
+    .filter(t => filter === "all" || (filter === "active" ? activeStates.includes(t.status) : t.status === filter))
+    .sort((a, b) => Number(activeStates.includes(b.status)) - Number(activeStates.includes(a.status))
+      || (b.updated_at || b.timestamp || 0) - (a.updated_at || a.timestamp || 0));
   if (!filtered.length) { const empty = document.createElement("li"); empty.className = "empty-state"; empty.textContent = filter === "all" ? "No transfers yet." : `No ${filter} transfers.`; list.appendChild(empty); return; }
   filtered.forEach(t => {
     const li = document.createElement("li"); li.className = "transfer-row";
     const device = (window._lastDevices || []).find(item => item.id === t.device_id);
     const name = document.createElement("strong"); name.textContent = t.filename;
-    const progressText = t.offset != null ? ` · ${formatBytes(t.offset)} of ${formatBytes(t.size || 0)}` : "";
-    const from = t.direction === "send" ? "SuperShare host" : (device?.name || "Browser device");
-    const to = t.direction === "send" ? (device?.name || t.destination || "connected device") : (t.destination || "shared folder");
-    const detail = document.createElement("span"); detail.textContent = `From ${from} to ${to} · ${formatBytes(t.size || 0)}${progressText} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
+    const route = document.createElement("span"); route.className = "transfer-route";
+    const from = t.direction === "send" ? "This laptop" : (device?.name || "Browser profile");
+    const to = t.direction === "send" ? (device?.name || (t.destination === "local-dashboard" ? "This laptop browser" : "Connected browser")) : compactDestination(t.destination);
+    route.textContent = t.direction === "send" ? `Downloaded on ${to}` : `Received from ${from} · saved to ${to}`;
     const status = document.createElement("span"); status.className = `transfer-state ${t.status}`;
     status.textContent = ({ queued: "Queued", transferring: "Transferring", verifying: "Verifying", interrupted: "Interrupted · can resume", completed: "Completed", failed: "Failed", cancelled: "Cancelled", skipped: "Skipped" })[t.status] || t.status;
-    li.append(name, detail, status);
+    const top = document.createElement("div"); top.className = "transfer-topline"; top.append(name, status);
+    const meta = document.createElement("span"); meta.className = "transfer-meta";
+    meta.textContent = `${formatBytes(t.size || 0)} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}`;
+    const body = document.createElement("div"); body.className = "transfer-body"; body.append(top, route, meta);
     if (t.size > 0 && t.offset != null && ["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
       const progress = document.createElement("progress");
       progress.className = "transfer-progress";
       progress.max = t.size;
       progress.value = Math.min(t.offset, t.size);
       progress.setAttribute("aria-label", `${t.filename}: ${Math.round(t.offset / t.size * 100)} percent, ${formatBytes(t.offset)} of ${formatBytes(t.size)} acknowledged by host`);
-      li.appendChild(progress);
+      body.appendChild(progress);
+      const progressMeta = document.createElement("span"); progressMeta.className = "transfer-meta";
+      progressMeta.textContent = `${formatBytes(t.offset)} of ${formatBytes(t.size)} received`;
+      body.appendChild(progressMeta);
     }
+    if (t.detail || t.destination || t.sha256) {
+      const details = document.createElement("details"); details.className = "transfer-details";
+      const summary = document.createElement("summary"); summary.textContent = "Transfer details";
+      const extra = document.createElement("span");
+      const fields = [];
+      if (t.destination) fields.push(`Location: ${compactDestination(t.destination)}`);
+      if (t.detail) fields.push(t.detail);
+      if (t.sha256) fields.push(`SHA-256: ${t.sha256}`);
+      extra.textContent = fields.join(" · "); details.append(summary, extra); body.appendChild(details);
+    }
+    li.appendChild(body);
     if (["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
       const cancel = document.createElement("button"); cancel.className = "btn-xs outline"; cancel.textContent = t.status === "verifying" ? "Stop verification" : "Cancel";
       cancel.onclick = async () => {
@@ -417,6 +439,19 @@ function renderTransfers(transfers) {
     }
     list.appendChild(li);
   });
+}
+
+function compactDestination(destination) {
+  const value = String(destination || "shared folder");
+  const root = String(window._shareRoot || "").replace(/[\\/]+$/, "");
+  if (root && value.toLowerCase().startsWith(root.toLowerCase())) {
+    const relative = value.slice(root.length).replace(/^[\\/]+/, "");
+    return relative ? `/${relative.replaceAll("\\", "/")}` : "Shared folder root";
+  }
+  if (value === "local-dashboard") return "This laptop browser";
+  const normalized = value.replaceAll("\\", "/");
+  const parts = normalized.split("/").filter(Boolean);
+  return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : normalized;
 }
 
 document.getElementById("transferFilter").addEventListener("change", () => renderTransfers(window._lastTransfers || []));
@@ -514,6 +549,7 @@ async function fetchDirectory(path = "") {
   const breadcrumb = document.getElementById("breadcrumbBar");
   breadcrumb.replaceChildren(icon("home"), document.createTextNode(` Subpath: /${path}`));
   document.getElementById("zipCurrentBtn").href = "/api/zip?path=" + encodeURIComponent(path);
+  document.getElementById("zipCurrentBtn").dataset.downloadName = `${path.split("/").filter(Boolean).at(-1) || "shared-folder"}.zip`;
   const response = await fetch("/api/list?path=" + encodeURIComponent(path));
   if (!response.ok) throw new Error(await responseError(response));
   const data = await response.json();
@@ -521,10 +557,12 @@ async function fetchDirectory(path = "") {
   currentItems = data.items || [];
   if (data.share_root) {
     currentHostBrowsePath = data.share_root;
-    document.getElementById("hostRootText").textContent = `Host: ${data.share_root}`;
+    document.getElementById("hostRootText").textContent = data.share_root;
+    document.getElementById("hostRootText").title = data.share_root;
     document.getElementById("destinationPath").textContent = `${data.share_root}${path ? `\\${path.replaceAll("/", "\\")}` : ""}`;
   } else {
-    document.getElementById("hostRootText").textContent = "Shared destination available after pairing and approval";
+    document.getElementById("hostRootText").textContent = "Pair and get approval to view the receive folder";
+    document.getElementById("hostRootText").title = "";
   }
   const list = document.getElementById("fileList"); list.replaceChildren();
   if (path) {
@@ -559,18 +597,118 @@ async function fetchDirectory(path = "") {
       link.onclick = event => { event.preventDefault(); fetchDirectory(relPath); };
       const meta = document.createElement("div"); meta.className = "file-meta"; meta.textContent = "Folder · Open to view contents"; info.append(link, meta);
       const button = document.createElement("a"); button.href = `/api/zip?path=${encoded}`; button.className = "dl-btn folder";
+      button.dataset.downloadName = `${item.name}.zip`;
       button.append(icon("archive"), document.createTextNode(" ZIP")); left.appendChild(info); li.append(left, button);
     } else {
       link.href = `/api/download?path=${encoded}`; link.download = "";
+      link.dataset.downloadName = item.name; link.dataset.downloadSize = String(item.size || 0);
       link.append(icon("files"), document.createTextNode(` ${item.name}`));
       const meta = document.createElement("div"); meta.className = "file-meta"; meta.textContent = formatBytes(item.size); info.append(link, meta);
       const button = document.createElement("a"); button.href = `/api/download?path=${encoded}`; button.className = "dl-btn"; button.download = "";
+      button.dataset.downloadName = item.name;
+      button.dataset.downloadSize = String(item.size || 0);
       button.append(icon("download"), document.createTextNode(" Save")); left.appendChild(info); li.append(left, button);
     }
     checkbox.setAttribute("aria-label", `Select ${item.name}`); list.appendChild(li);
   });
   updateSelectionUI();
 }
+
+const MAX_IN_PAGE_DOWNLOAD_BYTES = 48 * 1024 * 1024;
+
+function addDownloadRow(filename) {
+  const queue = document.getElementById("downloadQueue");
+  queue.classList.remove("hidden");
+  while (queue.children.length >= 8) queue.firstElementChild.remove();
+  const row = document.createElement("li"); row.className = "download-row";
+  const info = document.createElement("div"); info.className = "download-row-info";
+  const title = document.createElement("strong"); title.textContent = filename;
+  const state = document.createElement("span"); state.className = "download-state"; state.textContent = "Connecting to host";
+  const progress = document.createElement("progress"); progress.max = 1; progress.value = 0; progress.setAttribute("aria-label", `Downloading ${filename}`);
+  const stop = document.createElement("button"); stop.type = "button"; stop.className = "btn-xs outline"; stop.textContent = "Cancel";
+  info.append(title, state); row.append(info, stop, progress); queue.prepend(row);
+  return { row, title, state, progress, stop };
+}
+
+function triggerBrowserDownload(url, filename) {
+  const link = document.createElement("a"); link.href = url; link.download = filename; link.hidden = true;
+  document.body.appendChild(link); link.click(); link.remove();
+}
+
+async function startTrackedDownload(url, filename, expectedSize = 0) {
+  const item = addDownloadRow(filename);
+  const controller = new AbortController();
+  item.stop.onclick = () => controller.abort();
+  let writer = null;
+  let reader = null;
+  let saveHandle = null;
+  try {
+    if (window.isSecureContext && "showSaveFilePicker" in window) {
+      try { saveHandle = await window.showSaveFilePicker({ suggestedName: filename }); }
+      catch (error) { if (error.name === "AbortError") throw error; }
+    }
+    if (!saveHandle && (!expectedSize || expectedSize > MAX_IN_PAGE_DOWNLOAD_BYTES)) {
+      item.stop.remove(); item.progress.removeAttribute("value");
+      item.state.textContent = "Sent to the browser download manager. Follow its Downloads panel for progress.";
+      triggerBrowserDownload(url, filename);
+      return;
+    }
+    const response = await fetch(url, { credentials: "same-origin", headers: deviceHeaders(), signal: controller.signal });
+    if (!response.ok) throw new Error(await responseError(response));
+    const total = Number(response.headers.get("Content-Length")) || 0;
+    reader = response.body?.getReader();
+    if (!reader) throw new Error("This browser cannot stream the download. Try a current browser.");
+    if (!saveHandle && total > MAX_IN_PAGE_DOWNLOAD_BYTES) {
+      await reader.cancel();
+      item.stop.remove(); item.progress.removeAttribute("value");
+      item.state.textContent = "Large file handed to the browser download manager; follow progress there.";
+      triggerBrowserDownload(url, filename);
+      return;
+    }
+    if (saveHandle) writer = await saveHandle.createWritable();
+    const chunks = [];
+    let received = 0;
+    item.state.textContent = total ? `Starting · ${formatBytes(total)}` : "Receiving · size not reported";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (!saveHandle && received > MAX_IN_PAGE_DOWNLOAD_BYTES) {
+        await reader.cancel(); chunks.length = 0;
+        item.stop.remove(); item.progress.removeAttribute("value");
+        item.state.textContent = "Large file handed to the browser download manager; follow progress there.";
+        triggerBrowserDownload(url, filename);
+        return;
+      }
+      if (writer) await writer.write(value); else chunks.push(value);
+      if (total) { item.progress.max = total; item.progress.value = received; }
+      else item.progress.removeAttribute("value");
+      item.state.textContent = `${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : " received"}`;
+    }
+    if (writer) await writer.close();
+    else {
+      const objectUrl = URL.createObjectURL(new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" }));
+      triggerBrowserDownload(objectUrl, filename);
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    }
+    item.progress.max = total || Math.max(received, 1); item.progress.value = total || received || 1;
+    item.state.textContent = `Saved · ${formatBytes(received)}`;
+    item.stop.remove(); item.row.classList.add("download-complete");
+  } catch (error) {
+    try { await reader?.cancel(); } catch (_) {}
+    try { await writer?.abort(); } catch (_) {}
+    item.stop.remove();
+    if (error.name === "AbortError") { item.state.textContent = "Download cancelled"; item.row.classList.add("download-cancelled"); }
+    else { item.state.textContent = `Download failed · ${error.message}`; item.row.classList.add("download-failed"); showNotice(error.message, "error"); }
+  }
+}
+
+document.getElementById("storageSection").addEventListener("click", event => {
+  const link = event.target.closest("a.dl-btn, #zipCurrentBtn, a.file-link[download]");
+  if (!link) return;
+  event.preventDefault();
+  startTrackedDownload(link.href, link.dataset.downloadName || "shared-folder.zip", Number(link.dataset.downloadSize) || 0);
+});
 
 async function loadHostModalFolders(dirPath) {
   const response = await fetch("/api/host-folders?dir=" + encodeURIComponent(dirPath || ""));
@@ -615,7 +753,7 @@ document.getElementById("selectAllCheckbox").onchange = event => {
   document.querySelectorAll(".item-checkbox").forEach(box => { box.checked = checked; }); updateSelectionUI();
 };
 document.getElementById("downloadSelectedBtn").onclick = () => {
-  if (selectedItems.size) window.location.href = `/api/zip-selected?items=${encodeURIComponent(JSON.stringify([...selectedItems.keys()]))}`;
+  if (selectedItems.size) startTrackedDownload(`/api/zip-selected?items=${encodeURIComponent(JSON.stringify([...selectedItems.keys()]))}`, `supershare_selected_${selectedItems.size}.zip`, 0);
 };
 document.getElementById("deleteSelectedBtn").onclick = async () => {
   if (!await confirmAction("Delete selected items?", `This permanently removes ${selectedItems.size} item(s) from the host shared folder.`, true)) return;
