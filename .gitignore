@@ -17,6 +17,9 @@ env/
 # Runtime state and generated transfer/archive files
 supershare_state.json
 supershare_state.tmp
+supershare_state.sqlite3
+supershare_state.sqlite3-shm
+supershare_state.sqlite3-wal
 .temp_*.zip
 
 # OS/editor files

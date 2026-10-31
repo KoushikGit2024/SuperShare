@@ -8,36 +8,38 @@
 </head>
 <body>
   <div class="container">
+    <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
     <header class="header">
-      <h1>⚡ SuperShare</h1>
-      <span class="badge">100% Offline • Direct Drive & Folder Browser</span>
+      <h1><span class="brand-mark" aria-hidden="true">S</span> SuperShare</h1>
+      <span class="badge">Offline file sharing · Local network</span>
       <div class="host-root-bar">
         <span id="hostRootText" class="host-root-text">Shared Path: Loading...</span>
-        <button class="btn-xs accent" id="openDriveBrowserBtn">🗂️ Browse Host PC Drives / Folders</button>
-        <button class="btn-xs outline" id="nativePickerBtn">💻 Native PC Popup</button>
+        <button class="btn-xs accent" id="openDriveBrowserBtn"><svg class="icon" aria-hidden="true"><use href="#i-folder-open"/></svg> Browse host folders</button>
+        <button class="btn-xs outline" id="nativePickerBtn"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg> Open PC folder picker</button>
       </div>
     </header>
 
     <section class="card device-card">
-      <div class="section-heading"><div><h2>📡 Devices on this hotspot</h2><p>Each browser is identified separately. Devices appear here after opening SuperShare.</p></div><span id="deviceCount" class="device-count">0 devices</span></div>
+      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-devices"/></svg> Devices on this hotspot</h2><p>Each browser is identified separately. Devices appear here after opening SuperShare.</p></div><span id="deviceCount" class="device-count">0 devices</span></div>
       <ul id="deviceList" class="device-list"><li class="empty-state">Waiting for devices to connect…</li></ul>
     </section>
 
     <section class="card">
-      <div class="section-heading"><div><h2>🔄 Recent transfers</h2><p>Files are streamed to the current destination. The source file is left in place.</p></div></div>
+      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> Recent transfers</h2><p>Each record shows who sent the file, where it was saved, and when.</p></div></div>
       <ul id="transferList" class="transfer-list"><li class="empty-state">No transfers yet.</li></ul>
     </section>
 
     <!-- Upload Card -->
     <section class="card">
-      <h2>📤 Send Files or Entire Folders to Current Path</h2>
+      <h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-send"/></svg> Send files or folders from this browser</h2>
+      <div class="route-summary" id="routeSummary"><span class="route-item"><strong>From</strong><span id="sourceDeviceName">This device</span></span><span class="route-arrow" aria-hidden="true">→</span><span class="route-item"><strong>To</strong><span id="destinationName">This host</span><code id="destinationPath">Loading destination...</code></span><span class="connection-state" id="connectionState">Checking connection</span><button id="pairDeviceBtn" class="btn-xs accent hidden" type="button">Pair with host</button></div>
       <div class="btn-grid">
-        <label class="btn primary">📄 Select Files<input type="file" id="fileInput" multiple hidden></label>
-        <label class="btn secondary">📁 Select Folder<input type="file" id="folderInput" webkitdirectory directory multiple hidden></label>
+        <label class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-file-plus"/></svg> Select files<input type="file" id="fileInput" multiple hidden></label>
+        <label class="btn secondary"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Select folder<input type="file" id="folderInput" webkitdirectory directory multiple hidden></label>
       </div>
       <div id="dropZone" class="drop-zone" tabindex="0">Drop files here, or paste copied files. They upload to the current folder without moving the originals.</div>
-      <div id="progressContainer" class="progress-box hidden">
-        <div class="progress-title" id="uploadFileName">Uploading...</div>
+      <div id="progressContainer" class="progress-box hidden" role="status" aria-live="polite">
+        <div class="progress-title"><span class="running-indicator"></span><span id="uploadFileName">Uploading...</span></div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="uploadBarFill"></div></div>
         <div class="progress-stats"><span id="uploadPercent">0%</span><span id="uploadSpeed">0 MB/s</span></div>
       </div>
@@ -46,13 +48,13 @@
     <!-- File & Folder Explorer -->
     <section class="card">
       <div class="browser-header">
-        <h2>📥 Shared Files & Folders</h2>
+        <h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-files"/></svg> Shared files and folders</h2>
         <div class="browser-actions">
-          <button class="btn-sm outline" id="newFolderBtn">➕ New Folder</button>
-          <a id="zipCurrentBtn" href="/api/zip?path=" class="btn-sm accent">📦 Download Folder (.zip)</a>
+          <button class="btn-sm outline" id="newFolderBtn"><svg class="icon" aria-hidden="true"><use href="#i-folder-plus"/></svg> New folder</button>
+          <a id="zipCurrentBtn" href="/api/zip?path=" class="btn-sm accent"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg> Download folder (.zip)</a>
         </div>
       </div>
-      <div class="breadcrumb" id="breadcrumbBar">📍 /</div>
+      <div class="breadcrumb" id="breadcrumbBar"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg> /</div>
       <div class="select-toolbar">
         <label class="checkbox-label"><input type="checkbox" id="selectAllCheckbox"><span>Select All</span></label>
         <span id="selectionSummary" class="selection-summary">0 selected</span>
@@ -65,14 +67,14 @@
   <div id="hostModal" class="modal-overlay hidden">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>🗂️ Select Any Drive or Folder on Host PC</h3>
-        <button id="closeModalBtn" class="btn-xs outline">✖</button>
+        <h3><svg class="icon heading-icon" aria-hidden="true"><use href="#i-folder-open"/></svg> Select a drive or folder</h3>
+        <button id="closeModalBtn" class="btn-xs outline" aria-label="Close"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
       <div class="drives-bar" id="drivesBar"></div>
       <div class="modal-path" id="modalCurrentPath">C:\</div>
       <ul class="modal-folder-list" id="modalFolderList"></ul>
       <div class="modal-footer">
-        <button id="selectThisHostFolderBtn" class="btn primary" style="width:100%">✅ Share & Open This Folder</button>
+        <button id="selectThisHostFolderBtn" class="btn primary" style="width:100%"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg> Share and open this folder</button>
       </div>
     </div>
   </div>
@@ -81,12 +83,33 @@
   <div id="selectionActionBar" class="selection-bar hidden">
     <div class="selection-bar-info"><strong id="barSelectedCount">0 selected</strong><span id="barSelectedSize"></span></div>
     <div class="selection-bar-buttons">
-      <button id="downloadSelectedBtn" class="btn-sm success">📦 Download Selected (.zip)</button>
-      <button id="deleteSelectedBtn" class="btn-sm danger">🗑️ Delete</button>
-      <button id="clearSelectionBtn" class="btn-sm outline">✖ Clear</button>
+      <button id="downloadSelectedBtn" class="btn-sm success"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg> Download selected (.zip)</button>
+      <button id="deleteSelectedBtn" class="btn-sm danger"><svg class="icon" aria-hidden="true"><use href="#i-trash"/></svg> Delete</button>
+      <button id="clearSelectionBtn" class="btn-sm outline"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg> Clear</button>
     </div>
   </div>
 
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-devices" viewBox="0 0 24 24"><rect x="2.5" y="3" width="13" height="16" rx="2"/><path d="M6 16h6M19 7h2.5v14H8v-2"/></symbol>
+    <symbol id="i-transfer" viewBox="0 0 24 24"><path d="M4 7h15l-3-3M20 17H5l3 3"/><path d="M19 7v5M5 17v-5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-files" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v14h12V4a2 2 0 0 0-2-2Z"/><path d="M8 6h4M8 10h4M8 14h3M8 22h12V8h-2"/></symbol>
+    <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16h13v-8"/><path d="M13 2v6h6M18 15v6M15 18h6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+    <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2M3 7l-1 11a2 2 0 0 0 2 2h13l5-9H5Z"/></symbol>
+    <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v4M3 6v12a2 2 0 0 0 2 2h8"/><path d="M18 15v6M15 18h6"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><path d="M3 4h18v4H3zM5 8v12h14V8M10 12h4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-6v-7h-4v7H4a1 1 0 0 1-1-1Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2m3 0-1 15H6L5 6m4 4v7m6-7v7"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></symbol>
+    <symbol id="i-device-mobile" viewBox="0 0 24 24"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+    <symbol id="i-pending" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 18h4a4 4 0 0 0 4-4V10"/></symbol>
+  </svg>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

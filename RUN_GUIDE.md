@@ -1,30 +1,32 @@
-  # 📖 SuperShare Practical Run Guide
+# SuperShare run guide
 
-## 1. Start the Server
-Open PowerShell or Command Prompt inside the `supershare` folder and run:
+## Start the laptop host
+
+Run from the project directory:
+
 ```powershell
 python run.py
 ```
-*(Or double-click `start_windows.bat`)*
 
-When prompted by Windows User Account Control (UAC), click **Yes**. `run.py` will automatically:
-1. Detect your active Wi-Fi Hotspot adapter (`InterfaceAlias`) and Laptop IPv4 address.
-2. Switch the adapter network category from **Public** to **Private**.
-3. Verify or create the Windows Firewall inbound rule on **TCP Port 8765**.
-4. Start the `aiohttp` server on `0.0.0.0:8765`.
+SuperShare runs with normal user permissions. The terminal shows the current session pairing code and local URLs. Keep the host process open while transferring.
 
-## 2. Open on Phone
-Look at the terminal output under `[PHONE] Available SuperShare addresses:` and open that link in Chrome on your phone:
-```text
-http://10.x.x.x:8765/
-```
+## Connect a phone on the laptop hotspot
 
-## 3. Browse Any Folder or Drive Without Copying
-- Tap **"🗂️ Browse Host PC Drives / Folders"** at the top of the page (works from both your phone and laptop!).
-- Switch between `C:\`, `D:\`, or any subfolder on your computer and tap **"✅ Share & Open This Folder"**.
-- Or click **"💻 Native PC Popup"** to pick a folder using the Windows folder dialog on your laptop.
+1. Turn on the laptop hotspot and connect the phone to it. Internet access is not required.
+2. Open the laptop URL printed by SuperShare in the phone browser.
+3. Choose **Pair with host** and enter the code from the laptop terminal.
+4. On the laptop dashboard, grant read, send, or both for 15 minutes, or trust the device with both permissions.
 
-## 4. Select & Transfer Files/Folders
-- **Download Single File or Folder:** Tap **⬇️ Save** on any file, or **📦 ZIP** on any folder.
-- **Multi-Select Download / Delete:** Check the boxes next to multiple files and folders, then tap **📦 Download Selected (.zip)** or **🗑️ Delete** in the floating bottom bar.
-- **Upload Huge Files or Entire Folders:** Tap **📄 Select Files** or **📁 Select Folder** to stream files from your phone to the currently open PC folder with a live MB/s speed meter.
+The phone can access shared files and upload only within the permissions granted. Restarting SuperShare rotates the session pairing code; already paired device credentials remain stored until forgotten or revoked.
+
+## Choose the receive folder
+
+Use the laptop dashboard's host-folder browser or native folder picker to set the active receive root. Remote clients can only access paths inside this selected root. A file that already exists at the destination is preserved; the incoming upload reports a conflict rather than replacing it.
+
+## Network troubleshooting
+
+SuperShare does not automatically change Windows network profiles or firewall rules. If the phone cannot connect, check that both devices are on the same hotspot, that hotspot client isolation is disabled, and that Windows Firewall allows the configured TCP port on the private hotspot network.
+
+## Known limitations
+
+The browser interface sends files to the laptop host. Native Android system-share integration, direct peer-to-peer sending, automatic discovery, resumable transfers, and cancellation are planned but not yet available. Pairing currently uses local-network HTTP, so use a trusted private network.

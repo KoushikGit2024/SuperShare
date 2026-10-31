@@ -6,8 +6,8 @@ import sys
 import time
 import string
 import shutil
-import urllib.parse
 import zipfile
+import ntpath
 
 
 def get_system_drives() -> list:
@@ -50,12 +50,20 @@ def list_host_folders(dir_path: str) -> dict:
 
 
 def safe_join(base_dir: str, rel_path: str) -> str:
-    cleaned = urllib.parse.unquote(rel_path or "").replace("\\", "/").lstrip("/")
-    full_path = os.path.abspath(os.path.join(base_dir, cleaned))
-    base_abs = os.path.abspath(base_dir)
-    if not full_path.startswith(base_abs):
+    # Callers must decode transport encoding exactly once before reaching here.
+    # Reject rooted paths and traversal rather than silently trimming them.
+    cleaned = (rel_path or "").replace("\\", "/")
+    if ("\x00" in cleaned or cleaned.startswith("/") or ntpath.splitdrive(cleaned)[0]
+            or any(":" in part for part in cleaned.split("/"))):
         raise PermissionError("Access outside shared directory prohibited")
-    return full_path
+    base_real = os.path.realpath(os.path.abspath(base_dir))
+    full_real = os.path.realpath(os.path.abspath(os.path.join(base_real, cleaned)))
+    try:
+        if os.path.normcase(os.path.commonpath([base_real, full_real])) != os.path.normcase(base_real):
+            raise PermissionError("Access outside shared directory prohibited")
+    except ValueError as exc:
+        raise PermissionError("Access outside shared directory prohibited") from exc
+    return full_real
 
 
 def list_directory(base_dir: str, rel_path: str) -> list:
@@ -69,7 +77,9 @@ def list_directory(base_dir: str, rel_path: str) -> list:
         return []
 
     for entry in sorted(entries, key=lambda e: (not e.is_dir(), e.name.lower())):
-        if entry.name.startswith(".temp_") and entry.name.endswith(".zip"):
+        if (entry.name.startswith(".temp_") and entry.name.endswith(".zip")) or (
+            entry.name.startswith(".supershare-") and entry.name.endswith(".partial")
+        ):
             continue
         try:
             stat = entry.stat()
