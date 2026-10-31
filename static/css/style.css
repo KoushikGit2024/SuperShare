@@ -156,5 +156,21 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary)
 .modal-folder-list li { padding: 11px 14px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }
 .modal-folder-list li:hover { background: var(--card-hover); }
 button, a, label { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
-button:focus-visible, a:focus-visible, label:focus-within { outline: 2px solid #0078d4; outline-offset: 2px; }
+button:focus-visible, a:focus-visible, label:focus-within, input:focus-visible, select:focus-visible, .drop-zone:focus-visible { outline: 2px solid #0078d4; outline-offset: 2px; }
 @media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase, .pair-qr { align-items: flex-start; flex-direction: column; } .action-dialog-actions { justify-content: stretch; } .action-dialog-actions button { flex: 1 1 auto; } }
+@media (max-width: 420px) {
+  .container { padding: 12px; }
+  .header { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .network-actions, .browser-actions { width: 100%; flex-wrap: wrap; }
+  .route-summary { align-items: flex-start; flex-direction: column; }
+  .route-summary .route-arrow { display: none; }
+  .route-item { width: 100%; }
+  .connection-state { margin-left: 0; }
+  .transfer-row { align-items: flex-start; }
+  .transfer-row strong, .transfer-row > span:nth-child(2) { flex-basis: 100%; }
+  .selection-bar { left: 8px; bottom: 8px; width: calc(100% - 16px); transform: none; padding: 12px; flex-direction: column; align-items: stretch; }
+  .selection-bar-buttons { display: grid; grid-template-columns: 1fr 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

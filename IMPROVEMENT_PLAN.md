@@ -32,6 +32,9 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 - The unused legacy raw-upload route is retired in favor of the checksummed session protocol.
 - Expired transfer sessions are pruned hourly while the host is running; cleanup only removes managed partial files contained under their recorded receive root. Diagnostics include active reserved space.
 - Transfer status responses include stored failure detail so clients can explain interruption and verification failures. Resume checks account for existing partial allocation and other active reservations, and interrupted sessions recheck capacity before accepting another chunk.
+- The benchmark utility reports scenario, payload/checksums, elapsed and per-chunk timings, client OS/Python/CPU and peak RSS when supported; it attempts cleanup and cancels unfinished sessions on failures.
+- Accessibility/release code review added high-visibility keyboard focus for form controls and the drop target, reduced-motion support, narrower-phone layout handling, and less frequent screen-reader announcements for chunk-level progress.
+- Added `docs/NETWORK_VALIDATION_MATRIX.md` to keep loopback evidence separate from required Wi-Fi, hotspot, browser, assistive technology, TLS, and Windows packaging evidence.
 
 ## Remaining work by priority
 
@@ -98,6 +101,7 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 - Compare client/server SHA-256, throughput, CPU, memory, disk I/O, and UI responsiveness.
 - Measure concurrent browsers and tune chunk size/concurrency only from results.
 - Document supported practical file size and peer counts; avoid claiming unmeasured 100 GB support.
+- Current local evidence is one 4,325,376-byte, two-chunk loopback transfer. It does not establish Wi-Fi/hotspot capacity, practical size limits, concurrent peer support, server CPU/RSS, disk I/O, or browser responsiveness. See `docs/NETWORK_VALIDATION_MATRIX.md`.
 
 **Acceptance:** saved benchmark results define supported ranges and show no unbounded memory growth or UI freeze.
 
@@ -107,6 +111,7 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 - Check keyboard-only flow, screen-reader names and announcements, focus order, contrast, dialogs, and progress semantics.
 - Keep solid surfaces, zero gradients, zero emoji, SVG icons, and the established semantic status colors.
 - Validate Windows packaging, clean installation, upgrade, rollback, data migration, uninstall, firewall guidance, and cache/build artifact ignores.
+- Source/CSS review is complete for the locally addressable updates, but manual keyboard/screen-reader/viewport review and the Windows package lifecycle remain release gates. PyInstaller is not installed in this workspace.
 
 **Acceptance:** primary workflows work at phone and desktop widths and by keyboard, and a clean Windows release can upgrade/recover without losing user state.
 

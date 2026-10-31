@@ -50,7 +50,7 @@
         <label class="btn secondary"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Select folder<input type="file" id="folderInput" webkitdirectory directory multiple hidden></label>
       </div>
       <div id="dropZone" class="drop-zone" tabindex="0">Drop files here, or paste copied files. They upload to the current folder without moving the originals.</div>
-      <div id="progressContainer" class="progress-box hidden" role="status" aria-live="polite">
+      <div id="progressContainer" class="progress-box hidden" role="group" aria-label="Current transfer progress">
         <div class="progress-title"><span class="running-indicator"></span><span id="uploadFileName">Uploading...</span></div>
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="uploadBarFill"></div></div>
         <div class="progress-stats"><span id="uploadPercent">0%</span><span id="uploadSpeed">0 MB/s</span></div>
