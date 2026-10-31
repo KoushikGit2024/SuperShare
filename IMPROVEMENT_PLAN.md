@@ -19,6 +19,14 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 - Optional local HTTPS is available with `python run.py --https`; browsers must trust the generated local CA. HTTP remains the compatibility default and does not encrypt credentials or file data.
 - The host uses one configured receive root. Remote clients cannot change it.
 
+## Work completed in the current improvement cycle
+
+- The host device list is explicitly described as browser profiles, shows a short profile ID with its full value available on hover, browser/platform, address, last-seen time, temporary approval expiry or persistent trust, permissions, and the verification phrase when needed.
+- Browser profiles can set a display name before or after pairing. The host dashboard can rename, approve, change permissions, revoke, and forget remote profiles; the physical-device identity limitation is stated in the UI.
+- Pairing-code entry, profile rename, collision choice, destructive confirmation, and folder creation use an in-page accessible dialog rather than browser-native prompts.
+- Browser upload progress reports recent and average rate, elapsed time, and a cautious remaining-time estimate. The source browser shows a per-file batch queue, and host-side active rows show acknowledged-byte progress with accessible progress labels.
+- Same-file resume that points to a server session already marked complete now exits as complete instead of issuing a second completion request.
+
 ## Remaining work by priority
 
 ### 1. Documentation and scope consistency
@@ -49,7 +57,7 @@ The initial topology routes transfers through the laptop host. Direct browser-to
 
 ### 4. Transfer UX and observability
 
-- Replace native browser `prompt()` / `confirm()` calls with accessible in-page dialogs.
+- Keep pairing, conflict, and destructive actions in accessible in-page dialogs; verify keyboard and screen-reader behavior on supported browsers.
 - Show each file's source label, sender, destination, phase, bytes, percent, throughput, elapsed time, and reliable ETA.
 - Preserve actionable states for queued, waiting for approval, connecting, transferring, verifying, complete, failed, cancelled, and interrupted.
 - Explain that resume requires selecting the same file again in the same browser profile.

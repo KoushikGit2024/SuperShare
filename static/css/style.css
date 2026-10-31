@@ -127,6 +127,27 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary)
 /* Host Drive & Folder Picker Modal */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 2000; }
 .modal-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; width: 100%; max-width: 600px; max-height: 85vh; display: flex; flex-direction: column; padding: 18px; }
+.action-dialog { width: min(92vw, 460px); max-width: none; padding: 0; color: var(--text); background: transparent; border: 0; }
+.action-dialog::backdrop { background: rgba(0, 0, 0, .78); }
+.action-dialog-card { display: flex; flex-direction: column; gap: 12px; padding: 20px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+.action-dialog-card h2 { margin: 0; font-size: 1.1rem; }
+.action-dialog-card p { margin: 0; color: var(--muted); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.action-dialog-input-wrap { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: .85rem; }
+.action-dialog-input-wrap input { width: 100%; padding: 10px; color: var(--text); background: #101113; border: 1px solid var(--border); border-radius: 6px; }
+.action-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.action-dialog-actions button { min-height: 38px; }
+.transfer-progress { flex: 1 0 100%; height: 7px; accent-color: var(--primary); }
+.upload-queue { display: grid; gap: 7px; list-style: none; padding: 0; margin: 12px 0 0; }
+.upload-queue li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 9px 10px; background: #14171e; border: 1px solid var(--border); border-radius: 7px; }
+.upload-queue-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82rem; }
+.upload-queue-state { color: var(--muted); font-size: .75rem; }
+.upload-queue-state.complete { color: #86efac; }
+.upload-queue-state.failed { color: #fda4af; }
+.upload-queue-state.running { color: #93c5fd; }
+.upload-queue-state { overflow-wrap: anywhere; text-align: right; }
+.upload-queue progress { grid-column: 1 / -1; width: 100%; height: 6px; accent-color: var(--primary); }
+.device-identity { display: block; color: var(--muted); font: .7rem ui-monospace, monospace; overflow-wrap: anywhere; }
+.route-item code { color: var(--muted); font-size: .7rem; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
 .modal-header h3 { margin: 0; font-size: 1.05rem; }
 .drives-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -136,4 +157,4 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--primary)
 .modal-folder-list li:hover { background: var(--card-hover); }
 button, a, label { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
 button:focus-visible, a:focus-visible, label:focus-within { outline: 2px solid #0078d4; outline-offset: 2px; }
-@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase, .pair-qr { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 620px) { .device-row { flex-wrap: wrap; } .device-controls { width: 100%; padding-left: 48px; flex-wrap: wrap; } .btn-grid { grid-template-columns: 1fr; } .section-heading { flex-wrap: wrap; } .pair-phrase, .pair-qr { align-items: flex-start; flex-direction: column; } .action-dialog-actions { justify-content: stretch; } .action-dialog-actions button { flex: 1 1 auto; } }

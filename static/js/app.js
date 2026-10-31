@@ -5,12 +5,15 @@ let currentHostBrowsePath = "";
 const deviceIdKey = "supershare-device-id";
 let localDeviceId = localStorage.getItem(deviceIdKey);
 if (!localDeviceId) {
-  localDeviceId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/[^A-Za-z0-9_-]/g, "");
+  localDeviceId = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
   localStorage.setItem(deviceIdKey, localDeviceId);
 }
-const localDeviceName = localStorage.getItem("supershare-device-name") || `${navigator.userAgentData?.platform || navigator.platform || "Browser"} device`;
+const clientPlatform = navigator.userAgentData?.platform || (/Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : /Win/i.test(navigator.platform) ? "Windows" : /Mac/i.test(navigator.platform) ? "macOS" : "Browser");
+const browserName = /EdgA?\//.test(navigator.userAgent) || /EdgiOS\//.test(navigator.userAgent) ? "Edge" : /OPR\//.test(navigator.userAgent) ? "Opera" : /FxiOS\//.test(navigator.userAgent) || /Firefox\//.test(navigator.userAgent) ? "Firefox" : /CriOS\//.test(navigator.userAgent) || /Chrome\//.test(navigator.userAgent) ? "Chrome" : /Safari\//.test(navigator.userAgent) ? "Safari" : "Web browser";
+let localDeviceName = localStorage.getItem("supershare-device-name") || `${clientPlatform} · ${browserName}`;
 document.getElementById("sourceDeviceName").textContent = localDeviceName;
-const localDeviceType = /Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : /Win/i.test(navigator.userAgent) ? "Windows" : /Mac/i.test(navigator.userAgent) ? "macOS" : "Browser";
+document.getElementById("sourceProfileId").textContent = `Profile ID · ${localDeviceId.slice(0, 8)}`;
+const localDeviceType = `${clientPlatform} browser · ${browserName}`;
 
 function deviceHeaders() {
   return { "X-SuperShare-Device": localDeviceId, "X-SuperShare-Name": localDeviceName, "X-SuperShare-Type": localDeviceType };
@@ -33,6 +36,63 @@ function showNotice(message, type = "info") {
   notice.className = `notice ${type}`;
   clearTimeout(showNotice.timer);
   showNotice.timer = setTimeout(() => notice.classList.add("hidden"), 5000);
+}
+
+function actionDialog({ title, message, inputLabel = "", inputValue = "", actions = [] }) {
+  const dialog = document.getElementById("actionDialog");
+  if (!dialog?.showModal) {
+    showNotice("This browser does not support the accessible action dialog. Update the browser and try again.", "error");
+    return Promise.resolve(null);
+  }
+  document.getElementById("actionDialogTitle").textContent = title;
+  document.getElementById("actionDialogMessage").textContent = message;
+  const inputWrap = document.getElementById("actionDialogInputWrap");
+  const input = document.getElementById("actionDialogInput");
+  inputWrap.classList.toggle("hidden", !inputLabel);
+  document.getElementById("actionDialogInputLabel").textContent = inputLabel;
+  input.value = inputValue;
+  const actionList = document.getElementById("actionDialogActions");
+  actionList.replaceChildren();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener("close", onClose);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const onClose = () => { if (!settled) { settled = true; resolve(null); } };
+    dialog.addEventListener("close", onClose, { once: true });
+    const form = dialog.querySelector("form");
+    form.onsubmit = event => event.preventDefault();
+    input.onkeydown = event => {
+      if (event.key === "Enter" && inputLabel) { event.preventDefault(); actionList.querySelector("button:last-child")?.click(); }
+    };
+    actions.forEach(action => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = action.danger ? "btn-sm danger" : action.primary ? "btn-sm accent" : "btn-sm outline";
+      button.textContent = action.label;
+      button.addEventListener("click", () => finish(action.cancel ? null : inputLabel ? input.value.trim() || null : action.value));
+      actionList.appendChild(button);
+    });
+    dialog.showModal();
+    (inputLabel ? input : actionList.querySelector("button:last-child"))?.focus();
+  });
+}
+
+function confirmAction(title, message, danger = false) {
+  return actionDialog({ title, message, actions: [
+    { label: "Keep current", value: false },
+    { label: "Continue", value: true, primary: !danger, danger }
+  ] });
+}
+
+function editText(title, message, label, value = "") {
+  return actionDialog({ title, message, inputLabel: label, inputValue: value, actions: [
+    { label: "Cancel", value: null, cancel: true }, { label: "Save", value: true, primary: true }
+  ] });
 }
 
 async function responseError(response) {
@@ -124,6 +184,7 @@ async function checkUploadPermission() {
   const response = await fetch("/api/upload-permission", { headers: deviceHeaders(), credentials: "same-origin" });
   if (!response.ok) throw new Error(`Connection check failed (${response.status})`);
   const result = await response.json();
+  window._profilePaired = Boolean(result.paired);
   const canRead = Boolean(result.approved && result.permissions?.read);
   const phrasePanel = document.getElementById("pairPhrasePanel");
   phrasePanel.classList.toggle("hidden", !result.paired || result.pair_confirmed || !result.verification_phrase);
@@ -136,7 +197,7 @@ async function checkUploadPermission() {
 }
 
 async function pairThisDevice() {
-  const code = pairingCodeFromQr || prompt("Enter the session pairing code shown in the SuperShare host window:");
+  const code = pairingCodeFromQr || await editText("Pair this browser profile", "Enter the code shown in the SuperShare laptop terminal. Compare the verification phrase before approving access.", "Session pairing code");
   if (!code) return;
   try {
     const response = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, id: localDeviceId, name: localDeviceName, type: localDeviceType }) });
@@ -157,7 +218,7 @@ async function confirmPairingPhrase() {
 
 async function deviceAction(url, body) {
   try {
-    const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...deviceHeaders() }, credentials: "same-origin", body: JSON.stringify(body) });
     if (!response.ok) throw new Error(await responseError(response));
     return true;
   } catch (error) {
@@ -180,37 +241,59 @@ async function refreshDevices() {
     const canUpload = await checkUploadPermission();
     const devices = data.devices || [];
     window._lastDevices = devices;
-    document.getElementById("deviceCount").textContent = `${devices.length} device${devices.length === 1 ? "" : "s"}`;
+    document.getElementById("deviceCount").textContent = `${devices.length} profile${devices.length === 1 ? "" : "s"}`;
     const list = document.getElementById("deviceList");
     list.replaceChildren();
     if (!devices.length) {
       const empty = document.createElement("li"); empty.className = "empty-state";
-      empty.textContent = data.host_dashboard ? "Waiting for devices to connect…" : "Device status and approvals are managed from the laptop dashboard.";
+      empty.textContent = data.host_dashboard ? "Waiting for browser profiles to connect…" : "Browser profile status and approvals are managed from the laptop dashboard.";
       list.appendChild(empty);
     }
     devices.forEach(device => {
       const li = document.createElement("li"); li.className = "device-row";
       const main = document.createElement("div"); main.className = "device-main";
       const avatar = document.createElement("span"); avatar.className = "device-avatar";
-      avatar.appendChild(icon(device.type === "Android" || device.type === "iOS" ? "device-mobile" : "monitor"));
+      avatar.appendChild(icon(/Android|iOS|iPhone|iPad/i.test(device.type) ? "device-mobile" : "monitor"));
       const info = document.createElement("div"); info.className = "device-info";
       const title = document.createElement("strong"); title.textContent = device.name + (device.id === localDeviceId ? " (this device)" : "");
       const phraseText = device.paired && !device.pair_confirmed && device.verification_phrase ? ` · Verify phrase: ${device.verification_phrase}` : "";
-      const meta = document.createElement("span"); meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${new Date(device.last_seen * 1000).toLocaleTimeString()}${phraseText}`;
-      info.append(title, meta); main.append(avatar, info);
-      const paired = Boolean(device.paired);
-      const phraseConfirmed = Boolean(device.pair_confirmed);
-      const accessActive = device.trusted || (device.approved_until || 0) > Math.floor(Date.now() / 1000);
-      const hasPermission = Boolean(device.permissions?.read || device.permissions?.write);
+      const seenAt = new Date(device.last_seen * 1000);
+      const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - device.last_seen));
+      const seenText = elapsed < 60 ? `${elapsed}s ago` : elapsed < 3600 ? `${Math.floor(elapsed / 60)}m ago` : seenAt.toLocaleString();
+      const meta = document.createElement("span"); meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${seenText}${phraseText}`;
+      const identity = document.createElement("code"); identity.className = "device-identity"; identity.textContent = `Browser profile ID · ${String(device.id).slice(0, 8)}`;
+      identity.title = String(device.id);
+      const approval = document.createElement("span");
+      approval.textContent = device.trusted ? "Persistent trust" : device.approved_until ? `Temporary approval until ${new Date(device.approved_until * 1000).toLocaleString()}` : "No active approval";
+      info.append(title, meta, identity, approval); main.append(avatar, info);
+      const isThisProfile = device.id === localDeviceId;
+      const paired = Boolean(device.paired || isThisProfile);
+      const phraseConfirmed = Boolean(device.pair_confirmed || isThisProfile);
+      const accessActive = Boolean(isThisProfile || device.trusted || (device.approved_until || 0) > Math.floor(Date.now() / 1000));
+      const effectivePermissions = isThisProfile ? { read: true, write: true } : device.permissions;
+      const hasPermission = Boolean(effectivePermissions?.read || effectivePermissions?.write);
       const pending = paired && !(phraseConfirmed && accessActive && hasPermission);
       const state = document.createElement("span"); state.className = `device-state ${!paired || pending ? "pending" : device.online ? "online" : "offline"}`;
       if (!paired) state.append(icon("pending"), document.createTextNode(" Pairing incomplete"));
       else if (!phraseConfirmed) state.append(icon("pending"), document.createTextNode(" Verify phrase"));
       else if (pending) state.append(icon("pending"), document.createTextNode(" Needs approval"));
-      else state.textContent = `${device.online ? "Online" : "Offline"} · ${device.permissions?.read ? "Read" : ""}${device.permissions?.read && device.permissions?.write ? " + " : ""}${device.permissions?.write ? "Send" : ""}`;
+      else {
+        const permissionText = `${effectivePermissions?.read ? "Read" : ""}${effectivePermissions?.read && effectivePermissions?.write ? " + " : ""}${effectivePermissions?.write ? "Send" : ""}`;
+        const accessText = device.trusted ? "Trusted" : (device.approved_until || 0) > Math.floor(Date.now() / 1000) ? `Temporary · expires ${new Date(device.approved_until * 1000).toLocaleTimeString()}` : "No active approval";
+        state.textContent = `${device.online ? "Online" : "Offline"} · ${accessText} · ${permissionText}`;
+      }
       li.append(main, state);
-      if (device.id !== localDeviceId) {
+      {
         const controls = document.createElement("div"); controls.className = "device-controls";
+        const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename";
+        rename.onclick = async () => {
+          const name = await editText("Name browser profile", `This label helps distinguish this browser profile. It does not verify the physical device.\n\nProfile ID: ${device.id}`, "Display name", device.name);
+          if (!name) return;
+          const ok = await deviceAction("/api/devices/rename", { id: device.id, name });
+          if (ok) refreshDevices();
+        };
+        controls.appendChild(rename);
+        if (device.id !== localDeviceId) {
         if (pending && phraseConfirmed) {
           const approve = (label, permissions, remember = false) => {
             const button = document.createElement("button"); button.className = remember ? "btn-xs outline" : "btn-xs accent"; button.textContent = label;
@@ -231,14 +314,14 @@ async function refreshDevices() {
           updateAccess("Read only", { read: true, write: false });
           updateAccess("Send only", { read: false, write: true });
           const revoke = document.createElement("button"); revoke.className = "btn-xs outline"; revoke.textContent = "Revoke access";
-          revoke.onclick = async () => { if (confirm(`Revoke access for ${device.name}?`) && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); };
+          revoke.onclick = async () => { if (await confirmAction("Revoke browser access?", `This removes ${device.name}'s current access. The browser will need approval again.`, true) && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); };
           controls.appendChild(revoke);
         }
-        const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename";
-        rename.onclick = async () => { const name = prompt("Device name:", device.name); if (name?.trim() && await deviceAction("/api/devices/rename", { id: device.id, name: name.trim() })) refreshDevices(); };
         const forget = document.createElement("button"); forget.className = "btn-xs outline"; forget.textContent = "Forget";
-        forget.onclick = async () => { if (confirm(`Forget ${device.name}?`) && await deviceAction("/api/devices/forget", { id: device.id })) refreshDevices(); };
-        controls.append(rename, forget); li.append(controls);
+        forget.onclick = async () => { if (await confirmAction("Forget this browser profile?", `${device.name}'s saved identity and access record will be removed from this host. It must pair again to reconnect.`, true) && await deviceAction("/api/devices/forget", { id: device.id })) refreshDevices(); };
+        controls.appendChild(forget);
+        }
+        li.append(controls);
       }
       list.appendChild(li);
     });
@@ -262,6 +345,16 @@ function showDirectoryError(error) {
 
 document.getElementById("pairDeviceBtn").addEventListener("click", pairThisDevice);
 document.getElementById("confirmPairingBtn").addEventListener("click", confirmPairingPhrase);
+document.getElementById("nameBrowserBtn").addEventListener("click", async () => {
+  const name = await editText("Name this browser profile", "This label helps the laptop identify this browser profile. It does not prove physical device identity.", "Display name", localDeviceName);
+  if (!name) return;
+  localDeviceName = name;
+  localStorage.setItem("supershare-device-name", name);
+  document.getElementById("sourceDeviceName").textContent = name;
+  if (window._profilePaired) await deviceAction("/api/devices/rename", { id: localDeviceId, name });
+  else showNotice("Profile name saved in this browser. It will be shared with the host when you pair.", "success");
+  refreshDevices();
+});
 
 function renderTransfers(transfers) {
   const list = document.getElementById("transferList"); list.replaceChildren();
@@ -276,12 +369,21 @@ function renderTransfers(transfers) {
     const from = t.direction === "send" ? "SuperShare host" : (device?.name || "Browser device");
     const to = t.direction === "send" ? (device?.name || t.destination || "connected device") : (t.destination || "shared folder");
     const detail = document.createElement("span"); detail.textContent = `From ${from} to ${to} · ${formatBytes(t.size || 0)}${progressText} · ${new Date((t.timestamp || t.updated_at) * 1000).toLocaleString()}${t.detail ? ` · ${t.detail}` : ""}`;
-    const status = document.createElement("span"); status.className = `transfer-state ${t.status}`; status.textContent = t.status;
+    const status = document.createElement("span"); status.className = `transfer-state ${t.status}`;
+    status.textContent = ({ queued: "Queued", transferring: "Transferring", verifying: "Verifying", interrupted: "Interrupted · can resume", completed: "Completed", failed: "Failed", cancelled: "Cancelled", skipped: "Skipped" })[t.status] || t.status;
     li.append(name, detail, status);
+    if (t.size > 0 && t.offset != null && ["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
+      const progress = document.createElement("progress");
+      progress.className = "transfer-progress";
+      progress.max = t.size;
+      progress.value = Math.min(t.offset, t.size);
+      progress.setAttribute("aria-label", `${t.filename}: ${Math.round(t.offset / t.size * 100)} percent, ${formatBytes(t.offset)} of ${formatBytes(t.size)} acknowledged by host`);
+      li.appendChild(progress);
+    }
     if (["queued", "transferring", "interrupted", "verifying"].includes(t.status)) {
       const cancel = document.createElement("button"); cancel.className = "btn-xs outline"; cancel.textContent = "Cancel";
       cancel.onclick = async () => {
-        if (!confirm(`Cancel transfer of ${t.filename}? Its partial file will be removed.`)) return;
+        if (!await confirmAction("Cancel this transfer?", `Cancel ${t.filename} and remove its partial file from the host?`, true)) return;
         const response = await fetch(`/api/transfers/${encodeURIComponent(t.id)}/cancel`, { method: "POST" });
         if (!response.ok) showNotice(await responseError(response), "error"); else refreshDevices();
       };
@@ -308,6 +410,14 @@ function formatBytes(bytes) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${parseFloat((bytes / Math.pow(1024, index)).toFixed(2))} ${units[index]}`;
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total % 3600 / 60);
+  const remaining = total % 60;
+  return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${remaining}s` : `${remaining}s`;
 }
 
 const SHA256_K = new Uint32Array([
@@ -492,7 +602,7 @@ document.getElementById("downloadSelectedBtn").onclick = () => {
   if (selectedItems.size) window.location.href = `/api/zip-selected?items=${encodeURIComponent(JSON.stringify([...selectedItems.keys()]))}`;
 };
 document.getElementById("deleteSelectedBtn").onclick = async () => {
-  if (!confirm(`Delete ${selectedItems.size} selected item(s)?`)) return;
+  if (!await confirmAction("Delete selected items?", `This permanently removes ${selectedItems.size} item(s) from the host shared folder.`, true)) return;
   const response = await fetch("/api/delete-selected", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: [...selectedItems.keys()] }) });
   if (response.ok) fetchDirectory(currentPath); else showNotice(await responseError(response), "error");
 };
@@ -508,56 +618,93 @@ async function uploadFiles(files, retryName = null) {
   const bar = document.getElementById("uploadBarFill");
   const percent = document.getElementById("uploadPercent");
   const speed = document.getElementById("uploadSpeed");
+  const queue = document.getElementById("uploadQueue");
   box.classList.remove("hidden");
+  document.querySelector(".running-indicator")?.classList.remove("complete", "failed");
   let skippedFiles = 0;
   try {
     const access = await checkUploadPermission();
     if (!access.canSend) throw new Error("The host has not enabled send access for this device.");
   } catch (error) { showNotice(error.message, "error"); return; }
     setConnectionState(`Sending ${files.length} file${files.length === 1 ? "" : "s"}`, "online");
+  queue.replaceChildren();
+  queue.classList.remove("hidden");
+  const queueEntries = Array.from(files, (file, index) => {
+    const relative = retryName || file.webkitRelativePath || file.name;
+    const row = document.createElement("li");
+    const fileName = document.createElement("span"); fileName.className = "upload-queue-name"; fileName.textContent = `${index + 1}. ${relative} · ${formatBytes(file.size)}`;
+    const state = document.createElement("span"); state.className = "upload-queue-state"; state.textContent = "Queued"; state.setAttribute("aria-live", "polite");
+    const progress = document.createElement("progress"); progress.max = file.size || 1; progress.value = 0; progress.setAttribute("aria-label", `${relative}: queued`);
+    row.append(fileName, state, progress); queue.appendChild(row);
+    return { state, progress, relative };
+  });
+  let activeQueueEntry = null;
   try {
     for (let index = 0; index < files.length; index++) {
       const file = files[index];
       const relative = retryName || file.webkitRelativePath || file.name;
       const destination = currentPath ? `${currentPath}/${relative}` : relative;
+      const queueEntry = queueEntries[index];
+      activeQueueEntry = queueEntry;
+      queueEntry.state.textContent = "Preparing"; queueEntry.state.className = "upload-queue-state running";
       name.textContent = `Uploading ${index + 1} of ${files.length}: ${relative}`;
       bar.style.width = "0%"; percent.textContent = "0%"; speed.textContent = "Starting";
       await new Promise((resolve, reject) => {
         (async () => {
           const start = Date.now();
+          let lastSampleAt = start;
+          let lastSampleOffset = 0;
           const headers = { "Content-Type": "application/json", ...deviceHeaders() };
           const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
           const resumeId = localStorage.getItem(resumeKey) || "";
           let collision = "ask";
           let created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId, collision }) });
           if (created.status === 409) {
-            const choice = prompt(`A file named "${file.name}" already exists. Choose skip, rename, replace, or cancel. Replacing overwrites the existing file after the new transfer verifies.`, "rename");
-            collision = (choice || "cancel").trim().toLowerCase();
-            if (collision === "cancel") { skippedFiles++; resolve(); return; }
-            if (!["skip", "rename", "replace"].includes(collision)) throw new Error("Choose skip, rename, replace, or cancel.");
-            if (collision === "replace" && !confirm(`Replace ${file.name} after the incoming file verifies?`)) { resolve(); return; }
+            collision = await actionDialog({ title: "Destination file already exists", message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`, actions: [
+              { label: "Cancel", value: "cancel" }, { label: "Skip", value: "skip" },
+              { label: "Keep both", value: "rename" }, { label: "Replace after verify", value: "replace", primary: true }
+            ] }) || "cancel";
+            if (collision === "cancel") { skippedFiles++; queueEntry.state.textContent = "Cancelled"; queueEntry.state.className = "upload-queue-state"; resolve(); return; }
             created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, collision }) });
           }
           if (!created.ok) throw new Error(await responseError(created));
           const session = await created.json();
-          if (session.status === "skipped") { skippedFiles++; resolve(); return; }
+          if (session.status === "skipped") { skippedFiles++; queueEntry.state.textContent = "Skipped"; queueEntry.state.className = "upload-queue-state"; resolve(); return; }
+          if (session.status === "completed") { localStorage.removeItem(resumeKey); queueEntry.state.textContent = "Completed"; queueEntry.state.className = "upload-queue-state complete"; queueEntry.progress.value = queueEntry.progress.max; resolve(); return; }
           localStorage.setItem(resumeKey, session.id);
           let offset = session.offset || 0;
+          const resumeOffset = offset;
+          lastSampleOffset = offset;
           const chunkSize = session.chunk_size;
+          queueEntry.progress.value = Math.min(offset, file.size || 1);
+          queueEntry.progress.setAttribute("aria-label", `${relative}: resumed at ${formatBytes(offset)} of ${formatBytes(file.size)}`);
+          queueEntry.state.textContent = "Transferring";
           while (offset < file.size) {
             const chunk = file.slice(offset, Math.min(offset + chunkSize, file.size));
             const chunkChecksum = await sha256Blob(chunk);
             const response = await fetch(`/api/transfers/${session.id}/chunk`, { method: "PUT", headers: { ...deviceHeaders(), "X-Chunk-Offset": String(offset), "X-Chunk-SHA256": chunkChecksum }, credentials: "same-origin", body: chunk });
             if (!response.ok) throw new Error(await responseError(response));
             const result = await response.json(); offset = result.offset;
+            queueEntry.progress.value = Math.min(offset, file.size || 1);
+            queueEntry.progress.setAttribute("aria-label", `${relative}: ${Math.round(file.size ? offset / file.size * 100 : 100)} percent, ${formatBytes(offset)} of ${formatBytes(file.size)} acknowledged`);
             const progress = file.size ? Math.round(offset / file.size * 100) : 100;
             bar.style.width = `${progress}%`; percent.textContent = `${progress}%`;
-            const seconds = (Date.now() - start) / 1000;
-            speed.textContent = `${formatBytes(offset / Math.max(seconds, 0.001))}/s · ${formatBytes(offset)} of ${formatBytes(file.size)}`;
+            const now = Date.now();
+            const elapsedSeconds = Math.max((now - start) / 1000, 0.001);
+            const sampleSeconds = Math.max((now - lastSampleAt) / 1000, 0.001);
+            const currentRate = Math.max(offset - lastSampleOffset, 0) / sampleSeconds;
+            const averageRate = (offset - resumeOffset) / elapsedSeconds;
+            const remainingSeconds = averageRate > 0 ? Math.ceil((file.size - offset) / averageRate) : 0;
+            speed.textContent = `${formatBytes(currentRate)}/s recent · ${formatBytes(averageRate)}/s avg · ${formatDuration(elapsedSeconds)} elapsed${remainingSeconds ? ` · about ${formatDuration(remainingSeconds)} left` : ""}`;
+            lastSampleAt = now; lastSampleOffset = offset;
           }
+          name.textContent = `Verifying ${file.name}`;
+          queueEntry.state.textContent = "Verifying";
+          speed.textContent = "Verifying chunks and final file checksum";
           const completed = await fetch(`/api/transfers/${session.id}/complete`, { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({}) });
           if (!completed.ok) throw new Error(await responseError(completed));
           localStorage.removeItem(resumeKey);
+          queueEntry.state.textContent = "Completed"; queueEntry.state.className = "upload-queue-state complete"; queueEntry.progress.value = queueEntry.progress.max;
           resolve();
         })().catch(reject);
       });
@@ -565,18 +712,24 @@ async function uploadFiles(files, retryName = null) {
     name.textContent = `Completed ${files.length - skippedFiles}; skipped ${skippedFiles}`; percent.textContent = "100%"; bar.style.width = "100%";
     document.querySelector(".running-indicator")?.classList.add("complete");
     setConnectionState("Last transfer completed", "online"); showNotice(`Sent ${files.length - skippedFiles}; skipped ${skippedFiles} to ${document.getElementById("destinationName").textContent}.`, "success"); fetchDirectory(currentPath); refreshDevices();
-  } catch (error) { name.textContent = "Transfer failed"; document.querySelector(".running-indicator")?.classList.add("failed"); setConnectionState("Transfer failed", "error"); showNotice(error.message, "error"); refreshDevices(); }
+  } catch (error) {
+    name.textContent = "Transfer failed";
+    if (activeQueueEntry) { activeQueueEntry.state.textContent = `Failed · ${error.message}`; activeQueueEntry.state.className = "upload-queue-state failed"; }
+    queueEntries.forEach(entry => { if (entry.state.textContent === "Queued") entry.state.textContent = "Not started · earlier file failed"; });
+    document.querySelector(".running-indicator")?.classList.add("failed");
+    setConnectionState("Transfer failed", "error"); showNotice(error.message, "error"); refreshDevices();
+  }
 }
 
-document.getElementById("fileInput").onchange = event => uploadFiles(event.target.files);
-document.getElementById("folderInput").onchange = event => uploadFiles(event.target.files);
+document.getElementById("fileInput").onchange = event => { const files = Array.from(event.target.files || []); event.target.value = ""; uploadFiles(files); };
+document.getElementById("folderInput").onchange = event => { const files = Array.from(event.target.files || []); event.target.value = ""; uploadFiles(files); };
 const dropZone = document.getElementById("dropZone");
 dropZone.addEventListener("dragover", event => { event.preventDefault(); dropZone.classList.add("drag-active"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-active"));
 dropZone.addEventListener("drop", event => { event.preventDefault(); dropZone.classList.remove("drag-active"); uploadFiles(event.dataTransfer.files); });
 document.addEventListener("paste", event => { const files = Array.from(event.clipboardData?.files || []); if (files.length) uploadFiles(files); });
 document.getElementById("newFolderBtn").onclick = async () => {
-  const name = prompt("New folder name:"); if (!name) return;
+  const name = await editText("Create a folder", "The folder will be created inside the current shared location.", "Folder name"); if (!name) return;
   const path = currentPath ? `${currentPath}/${name}` : name;
   const response = await fetch("/api/mkdir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) });
   if (response.ok) fetchDirectory(currentPath); else showNotice(await responseError(response), "error");

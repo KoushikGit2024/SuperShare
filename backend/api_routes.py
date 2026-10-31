@@ -346,14 +346,17 @@ async def devices_handler(request: web.Request) -> web.Response:
 
 
 async def rename_device_handler(request: web.Request) -> web.Response:
-    _require_host_dashboard(request)
     body = await request.json()
     device_id = body.get("id", "")
     name = str(body.get("name", "")).strip()[:80]
+    local_request = _is_local_host_request(request)
+    requester_id = request.headers.get("X-SuperShare-Device", "").strip()
     with STATE["lock"]:
         device = STATE["devices"].get(device_id)
         if not device or not name:
             raise web.HTTPBadRequest(text="Device and non-empty name are required")
+        if not local_request and (requester_id != device_id or not _authenticated_device(request, device)):
+            raise web.HTTPForbidden(text="Only the laptop dashboard or the authenticated browser profile can rename this profile")
         device["name"] = name
         device["display_name"] = name
     save_persistent_state()

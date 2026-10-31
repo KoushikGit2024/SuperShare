@@ -31,19 +31,19 @@
     </section>
 
     <section class="card device-card" id="devicesSection">
-      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-devices"/></svg> Devices on this hotspot</h2><p>Each browser is identified separately. Devices appear here after opening SuperShare.</p></div><span id="deviceCount" class="device-count">0 devices</span></div>
-      <ul id="deviceList" class="device-list"><li class="empty-state">Waiting for devices to connect…</li></ul>
+      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-devices"/></svg> Known browser profiles</h2><p>Each browser profile has a separate identity. The short ID helps distinguish profiles; it does not prove physical device identity.</p></div><span id="deviceCount" class="device-count">0 profiles</span></div>
+      <ul id="deviceList" class="device-list"><li class="empty-state">Waiting for browser profiles to connect…</li></ul>
     </section>
 
     <section class="card" id="transfersSection">
-      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> Transfers</h2><p>Active jobs and recent results with sender, destination, progress, and current state.</p></div><label class="transfer-filter-label" for="transferFilter">Show <select id="transferFilter"><option value="all">All states</option><option value="active">Active</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label></div>
+      <div class="section-heading"><div><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> Transfers</h2><p>Active jobs and recent results with direction, destination, acknowledged bytes, and current state.</p></div><label class="transfer-filter-label" for="transferFilter">Show <select id="transferFilter"><option value="all">All states</option><option value="active">Active</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label></div>
       <ul id="transferList" class="transfer-list"><li class="empty-state">No transfers yet.</li></ul>
     </section>
 
     <!-- Upload Card -->
     <section class="card" id="sendSection">
       <h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-send"/></svg> Send files or folders from this browser</h2>
-      <div class="route-summary" id="routeSummary"><span class="route-item"><strong>From</strong><span id="sourceDeviceName">This device</span></span><span class="route-arrow" aria-hidden="true">→</span><span class="route-item"><strong>To</strong><span id="destinationName">This host</span><code id="destinationPath">Loading destination...</code></span><span class="connection-state" id="connectionState">Checking connection</span><button id="pairDeviceBtn" class="btn-xs accent hidden" type="button">Pair with host</button></div>
+      <div class="route-summary" id="routeSummary"><span class="route-item"><strong>From</strong><span id="sourceDeviceName">This browser profile</span><code id="sourceProfileId"></code></span><button id="nameBrowserBtn" class="btn-xs outline" type="button">Name this profile</button><span class="route-arrow" aria-hidden="true">→</span><span class="route-item"><strong>To</strong><span id="destinationName">This host</span><code id="destinationPath">Loading destination...</code></span><span class="connection-state" id="connectionState">Checking connection</span><button id="pairDeviceBtn" class="btn-xs accent hidden" type="button">Pair with host</button></div>
       <div id="pairPhrasePanel" class="pair-phrase hidden"><div><strong>Verify this phrase on the laptop</strong><code id="pairPhrase"></code><span>Compare all three words with the laptop dashboard, then confirm on both devices.</span></div><button id="confirmPairingBtn" class="btn-xs accent" type="button">Phrase matches</button></div>
       <div class="btn-grid">
         <label class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-file-plus"/></svg> Select files<input type="file" id="fileInput" multiple hidden></label>
@@ -55,6 +55,7 @@
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="uploadBarFill"></div></div>
         <div class="progress-stats"><span id="uploadPercent">0%</span><span id="uploadSpeed">0 MB/s</span></div>
       </div>
+      <ul id="uploadQueue" class="upload-queue hidden" aria-label="Files in this send batch"></ul>
     </section>
 
     <!-- File & Folder Explorer -->
@@ -90,6 +91,15 @@
       </div>
     </div>
   </div>
+
+  <dialog id="actionDialog" class="action-dialog" aria-labelledby="actionDialogTitle" aria-describedby="actionDialogMessage">
+    <form method="dialog" class="action-dialog-card">
+      <h2 id="actionDialogTitle"></h2>
+      <p id="actionDialogMessage"></p>
+      <label id="actionDialogInputWrap" class="action-dialog-input-wrap hidden"><span id="actionDialogInputLabel"></span><input id="actionDialogInput" type="text" autocomplete="off" maxlength="80"></label>
+      <div id="actionDialogActions" class="action-dialog-actions"></div>
+    </form>
+  </dialog>
 
   <!-- Floating Multi-Select Action Bar -->
   <div id="selectionActionBar" class="selection-bar hidden">
