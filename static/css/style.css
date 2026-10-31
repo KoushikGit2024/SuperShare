@@ -93,7 +93,7 @@ body { margin: 0; padding: 16px 16px 96px 16px; background: var(--bg); color: va
 .drop-zone.drag-active { border-color: var(--primary); background: #141b22; color: var(--text); }
 .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .btn { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px; border-radius: 12px; font-weight: 600; font-size: 0.95rem; cursor: pointer; color: white; border: none; }
-.btn.primary { background: var(--primary); }
+.btn.primary, .btn-xs.accent, .btn-sm.accent { color: #101113 !important; font-weight: 700; background: var(--primary); }
 .btn.secondary { background: var(--secondary); }
 .progress-box { margin-top: 16px; padding: 14px; background: var(--bg); border-radius: 12px; border: 1px solid var(--border); }
 .hidden { display: none !important; }
@@ -492,3 +492,15 @@ button:disabled { cursor: not-allowed; opacity: .48; }
     max-width: 220px;
   }
 }
+
+/* --- Mobile Ergonomics & WCAG AA Usability --- */
+@media (pointer: coarse) {
+  .btn-xs, .btn-sm, .dl-btn, .tab-btn, .modal-folder-list li, .action-dialog-actions button { min-height: 44px; }
+  input[type="checkbox"] { width: 28px; height: 28px; }
+  .item-left, .checkbox-label { gap: 14px; }
+}
+
+input, select, textarea { font-size: 16px; }
+body:has(dialog[open]), body:has(#hostModal:not(.hidden)) { overflow: hidden; }
+.action-dialog-card { max-height: calc(100dvh - 24px); overflow: auto; }
+.modal-card { max-height: calc(100dvh - 32px); }

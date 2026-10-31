@@ -1,13 +1,123 @@
+const sleep = (ms, signal) => new Promise((res, rej) => {
+  const t = setTimeout(res, ms);
+  signal?.addEventListener("abort", () => { clearTimeout(t); rej(new DOMException("Aborted", "AbortError")); }, { once: true });
+});
+
+const backoff = n => Math.min(30000, 1000 * 2 ** n) * (0.5 + Math.random() / 2);
+
+const waitOnline = signal => navigator.onLine ? Promise.resolve() : new Promise((res, rej) => {
+  addEventListener("online", res, { once: true });
+  signal?.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")), { once: true });
+});
+
+const isRetryable = e => e.network || [408, 422, 425, 429, 500, 502, 503, 504].includes(e.status);
+
+function putChunk(url, body, headers, signal, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.withCredentials = true;
+    xhr.timeout = 120000;
+    for (const [k, v] of Object.entries(headers)) {
+      xhr.setRequestHeader(k, v);
+    }
+    xhr.upload.onprogress = e => e.lengthComputable && onProgress(e.loaded);
+    xhr.onload = () => xhr.status < 300 ? resolve()
+      : reject(Object.assign(new Error(xhr.responseText || `HTTP ${xhr.status}`), { status: xhr.status }));
+    xhr.onerror = () => reject(Object.assign(new Error("Lost connection to the laptop"), { network: true }));
+    xhr.ontimeout = () => reject(Object.assign(new Error("Chunk upload timed out"), { network: true }));
+    const abort = () => { xhr.abort(); reject(new DOMException("Aborted", "AbortError")); };
+    signal.addEventListener("abort", abort, { once: true });
+    xhr.onloadend = () => signal.removeEventListener("abort", abort);
+    xhr.send(body);
+  });
+}
+
+async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes }) {
+  const inner = new AbortController();
+  signal.addEventListener("abort", () => inner.abort(), { once: true });
+  let cursor = 0;
+  const worker = async () => {
+    try {
+      while (cursor < offsets.length) {
+        inner.signal.throwIfAborted();
+        const off = offsets[cursor++];
+        const buf = await file.slice(off, Math.min(off + chunkSize, file.size)).arrayBuffer();
+        const hash = await sha256Buf(buf);
+        let sent = 0;
+        for (let attempt = 0; ; attempt++) {
+          try {
+            await putChunk(`/api/transfers/${session.id}/chunk`, buf,
+              { ...deviceHeaders(), "X-Chunk-Offset": String(off), "X-Chunk-SHA256": hash },
+              inner.signal, loaded => { onBytes(loaded - sent); sent = loaded; });
+            onBytes(buf.byteLength - sent);
+            break;
+          } catch (e) {
+            onBytes(-sent);
+            sent = 0;
+            if (e.name === "AbortError" || !isRetryable(e) || attempt >= 8) throw e;
+            await waitOnline(inner.signal);
+            await sleep(backoff(attempt), inner.signal);
+          }
+        }
+      }
+    } catch (e) {
+      inner.abort();
+      throw e;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, Math.max(1, offsets.length)) }, worker));
+}
+
+function friendlyError(e) {
+  if (e.name === "AbortError") return "Cancelled";
+  if (e.network || e instanceof TypeError) return "Lost connection to the laptop. Check both devices are on the same hotspot and mobile data isn't taking over, then select the file again to resume.";
+  if (["NotReadableError", "NotFoundError"].includes(e.name)) return "The browser can no longer read this file (moved, deleted or permission revoked).";
+  if (e.status === 507) return "The laptop's receive drive is full.";
+  if (e.status === 429) return "The host is already running its maximum number of transfers. Wait or cancel a stalled one.";
+  if (e.status === 403) return "The host has not granted this browser send access.";
+  if (e.status === 409) return `The host stopped this transfer: ${e.message}`;
+  return e.message || "Unknown error";
+}
+
+function listBusy(list) {
+  return Boolean(list && (list.contains(document.activeElement) || list.querySelector("details[open]")));
+}
+
 let currentPath = "";
 let currentItems = [];
 let selectedItems = new Map();
 let currentHostBrowsePath = "";
+
+const safeStorage = {
+  getItem(k) { try { return localStorage.getItem(k); } catch (_) { return this[k] || null; } },
+  setItem(k, v) { try { localStorage.setItem(k, v); } catch (_) { this[k] = String(v); } },
+  removeItem(k) { try { localStorage.removeItem(k); } catch (_) { delete this[k]; } }
+};
+
 const deviceIdKey = "supershare-device-id";
-let localDeviceId = localStorage.getItem(deviceIdKey);
+let localDeviceId = safeStorage.getItem(deviceIdKey);
 if (!localDeviceId) {
   localDeviceId = crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
-  localStorage.setItem(deviceIdKey, localDeviceId);
+  safeStorage.setItem(deviceIdKey, localDeviceId);
 }
+
+// Purge supershare-transfer resume keys older than 7 days (L4)
+try {
+  const now = Date.now();
+  const cutoff = 7 * 24 * 3600 * 1000;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith("supershare-transfer-time:")) {
+      const ts = Number(localStorage.getItem(k)) || 0;
+      if (now - ts > cutoff) {
+        const transferKey = k.replace("-time:", ":");
+        localStorage.removeItem(transferKey);
+        localStorage.removeItem(k);
+      }
+    }
+  }
+} catch (_) {}
 const clientPlatform = navigator.userAgentData?.platform || (/Android/i.test(navigator.userAgent) ? "Android" : /iPhone|iPad/i.test(navigator.userAgent) ? "iOS" : /Win/i.test(navigator.platform) ? "Windows" : /Mac/i.test(navigator.platform) ? "macOS" : "Browser");
 const browserName = /EdgA?\//.test(navigator.userAgent) || /EdgiOS\//.test(navigator.userAgent) ? "Edge" : /OPR\//.test(navigator.userAgent) ? "Opera" : /FxiOS\//.test(navigator.userAgent) || /Firefox\//.test(navigator.userAgent) ? "Firefox" : /CriOS\//.test(navigator.userAgent) || /Chrome\//.test(navigator.userAgent) ? "Chrome" : /Safari\//.test(navigator.userAgent) ? "Safari" : "Web browser";
 function wellFormedText(value) {
@@ -24,7 +134,7 @@ function wellFormedText(value) {
   }
   return result;
 }
-let localDeviceName = wellFormedText(localStorage.getItem("supershare-device-name")) || `${clientPlatform} · ${browserName}`;
+let localDeviceName = wellFormedText(safeStorage.getItem("supershare-device-name")) || `${clientPlatform} · ${browserName}`;
 document.getElementById("sourceDeviceName").textContent = localDeviceName;
 document.getElementById("sourceProfileId").textContent = `Profile ID · ${localDeviceId.slice(0, 8)}`;
 const localDeviceType = `${clientPlatform} browser · ${browserName}`;
@@ -304,6 +414,7 @@ async function refreshDevices() {
     window._lastDevices = devices;
     document.getElementById("deviceCount").textContent = `${devices.length} profile${devices.length === 1 ? "" : "s"}`;
     const list = document.getElementById("deviceList");
+    if (listBusy(list)) return;
     list.replaceChildren();
     if (!devices.length) {
       const empty = document.createElement("li"); empty.className = "empty-state";
@@ -328,12 +439,27 @@ async function refreshDevices() {
       approval.textContent = device.trusted ? "Persistent trust" : device.approved_until ? `Temporary approval until ${new Date(device.approved_until * 1000).toLocaleString()}` : "No active approval";
       info.append(title, meta, identity, approval); main.append(avatar, info);
       const isThisProfile = device.id === localDeviceId;
+      const perms = device.permissions || {};
+      const live = device.trusted || (device.approved_until || 0) > Date.now() / 1000;
+      const access = !device.paired ? "Not paired" : !device.pair_confirmed ? "Phrase not confirmed"
+        : !live ? "Awaiting approval" : [perms.read && "Read", perms.write && "Send"].filter(Boolean).join(" + ") || "No access";
       const state = document.createElement("span"); 
       state.className = `device-state ${device.online ? "online" : "offline"}`;
-      state.textContent = `${device.online ? "Online" : "Offline"} · Ready to Share · Read + Send`;
+      state.textContent = `${device.online ? "Online" : "Offline"} · ${access}`;
       li.append(main, state);
       {
         const controls = document.createElement("div"); controls.className = "device-controls";
+        if (data.host_dashboard && device.id !== localDeviceId) {
+          const mk = (label, fn, cls = "outline") => { const b = document.createElement("button"); b.className = `btn-xs ${cls}`; b.textContent = label; b.onclick = fn; return b; };
+          const grant = remember => async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions: { read: true, write: true }, remember })) refreshDevices(); };
+          const ready = device.paired && device.pair_confirmed;
+          const allow = mk("Allow 15 min", grant(false), "accent"); allow.disabled = !ready;
+          const always = mk("Always allow", grant(true)); always.disabled = !ready;
+          const revoke = mk("Revoke", async () => {
+            if (await confirmAction("Revoke access?", `${device.name} loses access and its transfers are cancelled.`, true)
+                && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); });
+          controls.prepend(allow, always, revoke);
+        }
         const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename";
         rename.onclick = async () => {
           const name = await editText("Name device", `Give this device a recognizable name:`, "Display name", device.name);
@@ -376,7 +502,7 @@ document.getElementById("nameBrowserBtn").addEventListener("click", async () => 
   const name = await editText("Name this browser profile", "This label helps the laptop identify this browser profile. It does not prove physical device identity.", "Display name", localDeviceName);
   if (!name) return;
   localDeviceName = wellFormedText(name);
-  localStorage.setItem("supershare-device-name", localDeviceName);
+  safeStorage.setItem("supershare-device-name", localDeviceName);
   document.getElementById("sourceDeviceName").textContent = localDeviceName;
   if (window._profilePaired) await deviceAction("/api/devices/rename", { id: localDeviceId, name: localDeviceName });
   else showNotice("Profile name saved in this browser. It will be shared with the host when you pair.", "success");
@@ -384,7 +510,9 @@ document.getElementById("nameBrowserBtn").addEventListener("click", async () => 
 });
 
 function renderTransfers(transfers) {
-  const list = document.getElementById("transferList"); list.replaceChildren();
+  const list = document.getElementById("transferList");
+  if (listBusy(list)) return;
+  list.replaceChildren();
   const filter = document.getElementById("transferFilter")?.value || "all";
   const activeStates = ["queued", "transferring", "interrupted", "verifying"];
   const filtered = [...transfers].filter(t => !String(t.device_id || "").startsWith("benchmark-"))
@@ -442,7 +570,8 @@ function renderTransfers(transfers) {
       retry.title = "The browser cannot retain access to the original file after the transfer ends. Select it again to retry.";
       retry.onclick = () => {
         const input = document.createElement("input"); input.type = "file";
-        input.onchange = () => { if (input.files?.length) uploadFiles(input.files, t.filename); };
+        const targetPath = t.relative_path || t.filename;
+        input.onchange = () => { if (input.files?.length) uploadFiles(input.files, targetPath); };
         input.click();
       };
       li.appendChild(retry);
@@ -529,13 +658,16 @@ function sha256Bytes(message) {
   return [...hash].map(value => value.toString(16).padStart(8, "0")).join("");
 }
 
+async function sha256Buf(buf) {
+  if (globalThis.crypto?.subtle) {
+    return [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+  return sha256Bytes(new Uint8Array(buf));
+}
+
 async function sha256Blob(blob) {
   const bytes = await blob.arrayBuffer();
-  if (globalThis.crypto?.subtle) {
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, "0")).join("");
-  }
-  return sha256Bytes(new Uint8Array(bytes));
+  return sha256Buf(bytes);
 }
 
 function updateSelectionUI() {
@@ -697,9 +829,10 @@ async function startTrackedDownload(url, filename, expectedSize = 0) {
     }
     if (writer) await writer.close();
     else {
-      const objectUrl = URL.createObjectURL(new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" }));
+      const blob = new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" });
+      const objectUrl = URL.createObjectURL(blob);
       triggerBrowserDownload(objectUrl, filename);
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
     }
     item.progress.max = total || Math.max(received, 1); item.progress.value = total || received || 1;
     item.state.textContent = `Saved · ${formatBytes(received)}`;
@@ -784,16 +917,41 @@ async function uploadFiles(files, retryName = null) {
   const percent = document.getElementById("uploadPercent");
   const speed = document.getElementById("uploadSpeed");
   const queue = document.getElementById("uploadQueue");
+  const cancelBtn = document.getElementById("cancelUploadBtn");
+
   box.classList.remove("hidden");
+  if (cancelBtn) {
+    cancelBtn.classList.remove("hidden");
+  }
   document.querySelector(".running-indicator")?.classList.remove("complete", "failed");
+
+  const uploadAbort = new AbortController();
+  if (cancelBtn) {
+    cancelBtn.onclick = () => uploadAbort.abort();
+  }
+
+  let wakeLock = null;
+  try {
+    wakeLock = await navigator.wakeLock?.request("screen");
+  } catch (_) {}
+
   let skippedFiles = 0;
+  const failedFiles = [];
+
   try {
     const access = await checkUploadPermission();
-    if (!access.canSend) throw new Error("The host has not enabled send access for this device.");
-  } catch (error) { showNotice(error.message, "error"); return; }
-    setConnectionState(`Sending ${files.length} file${files.length === 1 ? "" : "s"}`, "online");
+    if (!access.canSend) throw Object.assign(new Error("The host has not enabled send access for this device."), { status: 403 });
+  } catch (error) {
+    showNotice(friendlyError(error), "error");
+    if (cancelBtn) cancelBtn.classList.add("hidden");
+    wakeLock?.release();
+    return;
+  }
+
+  setConnectionState(`Sending ${files.length} file${files.length === 1 ? "" : "s"}`, "online");
   queue.replaceChildren();
   queue.classList.remove("hidden");
+
   const queueEntries = Array.from(files, (file, index) => {
     const relative = retryName || file.webkitRelativePath || file.name;
     const row = document.createElement("li");
@@ -803,132 +961,179 @@ async function uploadFiles(files, retryName = null) {
     row.append(fileName, state, progress); queue.appendChild(row);
     return { state, progress, relative };
   });
-  let activeQueueEntry = null;
+
   try {
     for (let index = 0; index < files.length; index++) {
+      uploadAbort.signal.throwIfAborted();
       const file = files[index];
       const relative = retryName || file.webkitRelativePath || file.name;
       const destination = currentPath ? `${currentPath}/${relative}` : relative;
       const queueEntry = queueEntries[index];
-      activeQueueEntry = queueEntry;
-      queueEntry.state.textContent = "Preparing"; queueEntry.state.className = "upload-queue-state running";
+
+      queueEntry.state.textContent = "Preparing";
+      queueEntry.state.className = "upload-queue-state running";
       name.textContent = `Uploading ${index + 1} of ${files.length}: ${relative}`;
-      bar.style.width = "0%"; percent.textContent = "0%"; speed.textContent = "Starting";
-      await new Promise((resolve, reject) => {
-        (async () => {
-          const start = Date.now();
-          let lastSampleAt = start;
-          let lastSampleOffset = 0;
-          const headers = { "Content-Type": "application/json", ...deviceHeaders() };
-          const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
-          const resumeId = localStorage.getItem(resumeKey) || "";
-          let collision = "ask";
-          let created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId, collision }) });
-          if (created.status === 409) {
-            collision = await actionDialog({ title: "Destination file already exists", message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`, actions: [
-              { label: "Cancel", value: "cancel" }, { label: "Skip", value: "skip" },
-              { label: "Keep both", value: "rename" }, { label: "Replace after verify", value: "replace", primary: true }
-            ] }) || "cancel";
-            if (collision === "cancel") { skippedFiles++; queueEntry.state.textContent = "Cancelled"; queueEntry.state.className = "upload-queue-state"; resolve(); return; }
-            created = await fetch("/api/transfers", { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({ name: file.name, size: file.size, path: destination, collision }) });
-          }
-          if (!created.ok) throw new Error(await responseError(created));
-          const session = await created.json();
-          if (session.status === "skipped") { skippedFiles++; queueEntry.state.textContent = "Skipped"; queueEntry.state.className = "upload-queue-state"; resolve(); return; }
-          if (session.status === "completed") { localStorage.removeItem(resumeKey); queueEntry.state.textContent = "Completed"; queueEntry.state.className = "upload-queue-state complete"; queueEntry.progress.value = queueEntry.progress.max; resolve(); return; }
-          localStorage.setItem(resumeKey, session.id);
-          let offset = session.offset || 0;
-          const resumeOffset = offset;
-          lastSampleOffset = offset;
-          const chunkSize = session.chunk_size || (8 * 1024 * 1024);
-          let uploadedBytes = offset;
-          queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
-          queueEntry.progress.setAttribute("aria-label", `${relative}: resumed at ${formatBytes(offset)} of ${formatBytes(file.size)}`);
-          queueEntry.state.textContent = "Transferring";
+      bar.style.width = "0%";
+      percent.textContent = "0%";
+      speed.textContent = "Starting";
 
-          // Generate chunk offsets list
-          const chunkOffsets = [];
-          for (let pos = offset; pos < file.size; pos += chunkSize) {
-            chunkOffsets.push(pos);
-          }
+      try {
+        await new Promise((resolve, reject) => {
+          (async () => {
+            const start = Date.now();
+            const headers = { "Content-Type": "application/json", ...deviceHeaders() };
+            const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
+            const resumeId = safeStorage.getItem(resumeKey) || "";
+            let collision = "ask";
 
-          // Concurrent pipeline worker pool (3 simultaneous TCP connections)
-          const concurrency = Math.min(3, Math.max(1, chunkOffsets.length));
-          let cursor = 0;
+            let created = await fetch("/api/transfers", {
+              method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal,
+              body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId, collision })
+            });
 
-          const uploadWorker = async () => {
-            while (cursor < chunkOffsets.length) {
-              const myOffset = chunkOffsets[cursor++];
-              const chunk = file.slice(myOffset, Math.min(myOffset + chunkSize, file.size));
-              
-              const response = await fetch(`/api/transfers/${session.id}/chunk`, {
-                method: "PUT",
-                headers: { ...deviceHeaders(), "X-Chunk-Offset": String(myOffset) },
-                credentials: "same-origin",
-                body: chunk
+            if (created.status === 409) {
+              collision = await actionDialog({
+                title: "Destination file already exists",
+                message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`,
+                actions: [
+                  { label: "Cancel", value: "cancel" },
+                  { label: "Skip", value: "skip" },
+                  { label: "Keep both", value: "rename" },
+                  { label: "Replace after verify", value: "replace", primary: true }
+                ]
+              }) || "cancel";
+
+              if (collision === "cancel") {
+                skippedFiles++;
+                queueEntry.state.textContent = "Cancelled";
+                queueEntry.state.className = "upload-queue-state";
+                resolve();
+                return;
+              }
+              created = await fetch("/api/transfers", {
+                method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal,
+                body: JSON.stringify({ name: file.name, size: file.size, path: destination, collision })
               });
-              
-              if (!response.ok) throw new Error(await responseError(response));
-              
-              uploadedBytes += chunk.size;
-              queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
-              const progress = file.size ? Math.round(uploadedBytes / file.size * 100) : 100;
-              bar.style.width = `${progress}%`;
-              percent.textContent = `${progress}%`;
-              
-              const now = Date.now();
-              const elapsedSeconds = Math.max((now - start) / 1000, 0.001);
-              const sampleSeconds = Math.max((now - lastSampleAt) / 1000, 0.001);
-              const currentRate = Math.max(uploadedBytes - lastSampleOffset, 0) / sampleSeconds;
-              const averageRate = (uploadedBytes - resumeOffset) / elapsedSeconds;
-              const remainingSeconds = averageRate > 0 ? Math.ceil((file.size - uploadedBytes) / averageRate) : 0;
-              const etaText = remainingSeconds ? ` · ETA: ${formatDuration(remainingSeconds)}` : "";
-              
-              speed.textContent = `${progress}% (${formatBytes(uploadedBytes)} / ${formatBytes(file.size)}) · ${formatBytes(currentRate)}/s${etaText}`;
-              queueEntry.state.textContent = `${progress}% · ${formatBytes(currentRate)}/s${etaText}`;
-              lastSampleAt = now;
-              lastSampleOffset = uploadedBytes;
             }
-          };
 
-          // Launch concurrent workers
-          const workers = [];
-          for (let w = 0; w < concurrency; w++) {
-            workers.push(uploadWorker());
-          }
-          await Promise.all(workers);
-          name.textContent = `Verifying ${file.name}`;
-          queueEntry.state.textContent = "Verifying";
-          speed.textContent = "Verifying chunks and final file checksum";
-          const completed = await fetch(`/api/transfers/${session.id}/complete`, { method: "POST", headers, credentials: "same-origin", body: JSON.stringify({}) });
-          if (!completed.ok) throw new Error(await responseError(completed));
-          localStorage.removeItem(resumeKey);
-          queueEntry.state.textContent = "Completed"; queueEntry.state.className = "upload-queue-state complete"; queueEntry.progress.value = queueEntry.progress.max;
-          resolve();
-        })().catch(reject);
-      });
+            if (!created.ok) {
+              throw Object.assign(new Error(await responseError(created)), { status: created.status });
+            }
+
+            const session = await created.json();
+            if (session.status === "skipped") {
+              skippedFiles++;
+              queueEntry.state.textContent = "Skipped";
+              queueEntry.state.className = "upload-queue-state";
+              resolve();
+              return;
+            }
+            if (session.status === "completed") {
+              safeStorage.removeItem(resumeKey);
+              queueEntry.state.textContent = "Completed";
+              queueEntry.state.className = "upload-queue-state complete";
+              queueEntry.progress.value = queueEntry.progress.max;
+              resolve();
+              return;
+            }
+
+            safeStorage.setItem(resumeKey, session.id);
+            safeStorage.setItem(`supershare-transfer-time:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`, String(Date.now()));
+
+            let offset = session.offset || 0;
+            const resumeOffset = offset;
+            const chunkSize = session.chunk_size || (4 * 1024 * 1024);
+            let uploadedBytes = offset;
+
+            queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
+            queueEntry.progress.setAttribute("aria-label", `${relative}: resumed at ${formatBytes(offset)} of ${formatBytes(file.size)}`);
+            queueEntry.state.textContent = "Transferring";
+
+            const chunkOffsets = [];
+            for (let pos = offset; pos < file.size; pos += chunkSize) {
+              chunkOffsets.push(pos);
+            }
+
+            const render = () => {
+              const pct = file.size ? Math.min(100, Math.round(uploadedBytes / file.size * 100)) : 100;
+              const now = Date.now(), secs = Math.max((now - start) / 1000, 0.001);
+              const rate = (uploadedBytes - resumeOffset) / secs;
+              const eta = rate > 0 ? ` · ETA ${formatDuration((file.size - uploadedBytes) / rate)}` : "";
+              bar.style.width = `${pct}%`;
+              percent.textContent = `${pct}%`;
+              queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
+              speed.textContent = `${formatBytes(uploadedBytes)} / ${formatBytes(file.size)} · ${formatBytes(rate)}/s${eta}`;
+              queueEntry.state.textContent = `${pct}% · ${formatBytes(rate)}/s${eta}`;
+            };
+
+            await sendChunks({
+              session, file, offsets: chunkOffsets, chunkSize, signal: uploadAbort.signal,
+              onBytes: d => { uploadedBytes += d; render(); }
+            });
+
+            name.textContent = `Verifying ${file.name}`;
+            queueEntry.state.textContent = "Verifying";
+            speed.textContent = "Verifying chunks and final file checksum";
+
+            const completed = await fetch(`/api/transfers/${session.id}/complete`, {
+              method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal, body: JSON.stringify({})
+            });
+
+            if (!completed.ok) {
+              throw Object.assign(new Error(await responseError(completed)), { status: completed.status });
+            }
+
+            safeStorage.removeItem(resumeKey);
+            queueEntry.state.textContent = "Completed";
+            queueEntry.state.className = "upload-queue-state complete";
+            queueEntry.progress.value = queueEntry.progress.max;
+            resolve();
+          })().catch(reject);
+        });
+      } catch (fileErr) {
+        if (fileErr.name === "AbortError") throw fileErr;
+        failedFiles.push(relative);
+        queueEntry.state.textContent = `Failed · ${friendlyError(fileErr)}`;
+        queueEntry.state.className = "upload-queue-state failed";
+        continue;
+      }
     }
-    name.textContent = `Completed ${files.length - skippedFiles}; skipped ${skippedFiles}`; percent.textContent = "100%"; bar.style.width = "100%";
-    document.querySelector(".running-indicator")?.classList.add("complete");
-    setConnectionState("Last transfer completed", "online"); showNotice(`Sent ${files.length - skippedFiles}; skipped ${skippedFiles} to ${document.getElementById("destinationName").textContent}.`, "success"); fetchDirectory(currentPath); refreshDevices();
-  } catch (error) {
-    name.textContent = "Transfer failed";
-    if (activeQueueEntry) { activeQueueEntry.state.textContent = `Failed · ${error.message}`; activeQueueEntry.state.className = "upload-queue-state failed"; }
-    queueEntries.forEach(entry => { if (entry.state.textContent === "Queued") entry.state.textContent = "Not started · earlier file failed"; });
+
+    const successCount = files.length - skippedFiles - failedFiles.length;
+    name.textContent = `Completed ${successCount}; skipped ${skippedFiles}; failed ${failedFiles.length}`;
+    percent.textContent = "100%";
+    bar.style.width = "100%";
+    document.querySelector(".running-indicator")?.classList.add(failedFiles.length ? "failed" : "complete");
+    setConnectionState("Batch transfer finished", "online");
+    showNotice(`Sent ${successCount}; skipped ${skippedFiles}; failed ${failedFiles.length} to ${document.getElementById("destinationName").textContent}.`, failedFiles.length ? "error" : "success");
+    fetchDirectory(currentPath);
+    refreshDevices();
+  } catch (err) {
+    name.textContent = err.name === "AbortError" ? "Transfer cancelled" : "Transfer failed";
+    queueEntries.forEach(entry => {
+      if (entry.state.textContent === "Queued") entry.state.textContent = "Not started · cancelled/aborted";
+    });
     document.querySelector(".running-indicator")?.classList.add("failed");
-    setConnectionState("Transfer failed", "error"); showNotice(error.message, "error"); refreshDevices();
+    setConnectionState(friendlyError(err), "error");
+    showNotice(friendlyError(err), "error");
+    refreshDevices();
+  } finally {
+    wakeLock?.release();
+    if (cancelBtn) cancelBtn.classList.add("hidden");
   }
 }
+
+const JUNK_FILE_RE = /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*|~\$.*|.*\.(tmp|crdownload|part))$/i;
 
 function sanitizeUploadFiles(rawFiles) {
   return Array.from(rawFiles || []).filter(file => {
     const name = file.name || "";
     const rel = file.webkitRelativePath || "";
-    // Filter out internal partial files and OS junk files (.DS_Store, Thumbs.db)
-    if (name.startsWith(".supershare-") || name.endsWith(".partial") || name === ".DS_Store" || name === "Thumbs.db") {
+    if (JUNK_FILE_RE.test(name) || name.startsWith(".supershare-") || name.endsWith(".partial")) {
       return false;
     }
-    if (rel.split("/").some(part => part.startsWith(".supershare-") || part.endsWith(".partial"))) {
+    const parts = rel.replace(/\\/g, "/").split("/");
+    if (parts.some(p => JUNK_FILE_RE.test(p) || p.startsWith(".supershare-") || p.endsWith(".partial"))) {
       return false;
     }
     return true;
@@ -949,10 +1154,10 @@ document.getElementById("folderInput").onchange = event => {
 const dropZone = document.getElementById("dropZone");
 dropZone.addEventListener("dragover", event => { event.preventDefault(); dropZone.classList.add("drag-active"); });
 dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-active"));
-dropZone.addEventListener("drop", event => {
+dropZone.addEventListener("drop", async event => {
   event.preventDefault();
   dropZone.classList.remove("drag-active");
-  const files = sanitizeUploadFiles(event.dataTransfer.files);
+  const files = sanitizeUploadFiles(await filesFromDataTransfer(event.dataTransfer));
   if (files.length) uploadFiles(files);
 });
 
@@ -1085,8 +1290,8 @@ initTabNavigation();
 fetchDirectory().catch(showDirectoryError);
 refreshDevices();
 refreshNetworkInfo();
-setInterval(refreshDevices, 5000);
-setInterval(refreshNetworkInfo, 30000);
+setInterval(() => { if (!document.hidden) refreshDevices(); }, 5000);
+setInterval(() => { if (!document.hidden) refreshNetworkInfo(); }, 30000);
 
 
 /* --- Storage Management & Data Maintenance --- */
@@ -1160,4 +1365,6 @@ switchTab = function(targetSectionId, updateHash = false) {
   }
 };
 
-setInterval(refreshStorageInfo, 25000);
+setInterval(() => { if (!document.hidden && activeTabId === "storageMgrSection") refreshStorageInfo(); }, 25000);
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshDevices(); });

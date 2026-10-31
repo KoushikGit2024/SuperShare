@@ -1,9 +1,19 @@
 
+import sys
+import os
+import time
+import threading
+import _thread
+import socket
+import subprocess
+import webbrowser
+import argparse
+from pathlib import Path
+
+RELOAD = threading.Event()
+
 def start_reloader_watcher():
     """Background thread watching python and frontend files; auto-restarts server on changes."""
-    import threading
-    import time
-    
     watch_dirs = [
         PROJECT_ROOT / "backend",
         PROJECT_ROOT / "static",
@@ -39,21 +49,15 @@ def start_reloader_watcher():
             for path, mtime in current_mtimes.items():
                 if path in initial_mtimes and mtime > initial_mtimes[path] + 0.1:
                     print(f"\n[RELOAD] Detected change in {os.path.basename(path)}. Reloading server...")
-                    os._exit(42)  # Exit code 42 triggers automatic restart loop
+                    RELOAD.set()
+                    _thread.interrupt_main()
+                    return
                 elif path not in initial_mtimes:
                     initial_mtimes[path] = mtime
 
     watcher = threading.Thread(target=watch_loop, daemon=True)
     watcher.start()
 
-"""Project root entry point for SuperShare."""
-import sys
-import os
-import socket
-import subprocess
-import webbrowser
-import argparse
-from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -152,12 +156,12 @@ def configure_hotspot_firewall_rule(port: int) -> int:
         "| Remove-NetFirewallRule; "
         f"Get-NetFirewallRule -DisplayName '{old_any_rule_name}' -ErrorAction SilentlyContinue "
         "| Remove-NetFirewallRule; "
-        f"Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue "
-        "| Remove-NetFirewallRule; "
-        "Get-NetFirewallRule | Where-Object { $_.DisplayName -eq 'python.exe' -and $_.Action -eq 'Block' } | Set-NetFirewallRule -Action Allow; "
-        f"New-NetFirewallRule -DisplayName '{rule_name}' "
-        "-Direction Inbound -Action Allow -Protocol TCP "
-        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Any | Out-Null"
+        "$ErrorActionPreference = 'Stop'; "
+        "Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' -and $_.NetworkCategory -ne 'Private' } "
+        "| ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private }; "
+        f"Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
+        f"New-NetFirewallRule -DisplayName '{rule_name}' -Direction Inbound -Action Allow -Protocol TCP "
+        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Private | Out-Null"
     )
     try:
         result = subprocess.run(
@@ -191,12 +195,7 @@ def local_subnet_firewall_rule_exists(port: int) -> bool:
         "foreach ($x in $r) { "
         "$p = $x | Get-NetFirewallPortFilter; "
         "$a = $x | Get-NetFirewallAddressFilter; "
-        "$active = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } | Select-Object -First 1; "
-        "$profiles = @(); if ($active) { $profiles += Get-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -ErrorAction SilentlyContinue }; "
-        "$profiles += Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' }; "
         f"if ($x.Enabled -eq 'True' -and $x.Direction -eq 'Inbound' -and $x.Action -eq 'Allow' -and "
-        "$x.Profile.ToString() -eq 'Private' -and $profiles.Count -gt 0 -and "
-        "@($profiles | Where-Object { $_.NetworkCategory -ne 'Private' }).Count -eq 0 -and "
         f"[string]$p.Protocol -eq 'TCP' -and [string]$p.LocalPort -eq '{port}' -and "
         "[string]$a.RemoteAddress -eq 'LocalSubnet') { exit 0 } }; exit 1"
     )
@@ -222,7 +221,7 @@ def ensure_hotspot_firewall_rule(port: int) -> bool:
         print("[WARNING] Could not check Windows administrator status; firewall rule was not changed.")
         return False
 
-    if False and local_subnet_firewall_rule_exists(port):
+    if local_subnet_firewall_rule_exists(port):
         print(f"[OK] Network profile and local-subnet TCP {port} firewall rule are already configured.")
         return True
 
@@ -319,6 +318,7 @@ def main():
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--https", action="store_true", help="Enable local TLS; trust the printed local CA in browser clients")
+    parser.add_argument("--reload", action="store_true", help="Dev only: restart on file changes")
     parser.add_argument("--_install-firewall-helper", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -439,7 +439,8 @@ def main():
             f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
         )
 
-        start_reloader_watcher()
+        if args.reload:
+            start_reloader_watcher()
         web.run_app(
             create_app(port=active_port, tls_info=tls_info),
             host=HOST,
@@ -449,9 +450,12 @@ def main():
         )
 
     except KeyboardInterrupt:
+        if RELOAD.is_set():
+            return 42
         print()
         print("[STOP] SuperShare stopped.")
         print()
+        return 0
 
     except OSError as e:
         print()
@@ -467,6 +471,7 @@ if __name__ == "__main__":
     while True:
         exit_code = main()
         if exit_code == 42:
+            RELOAD.clear()
             time.sleep(0.5)
             continue
         raise SystemExit(exit_code)

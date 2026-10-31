@@ -1,3 +1,25 @@
+_WIN_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+_BAD_CHARS = set('<>:"|?*')
+JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
+
+
+def sanitize_relative_path(rel: str) -> str:
+    parts = []
+    for part in (rel or "").replace("\\", "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise PermissionError("Parent-directory segments are not allowed")
+        part = "".join("_" if c in _BAD_CHARS or ord(c) < 32 else c for c in part).rstrip(" .") or "_"
+        if part.split(".")[0].lower() in _WIN_RESERVED:
+            part = "_" + part
+        if part.lower().startswith(".supershare-") or part.lower().startswith(".temp_"):
+            raise PermissionError("Reserved internal file name")
+        parts.append(part[:200])
+    if not parts:
+        raise ValueError("Empty path")
+    return "/".join(parts)
+
 """
 file_manager.py — Safe path resolution, direct drive/folder browsing, and ZIP64 creation.
 """
@@ -138,20 +160,21 @@ def build_multi_selection_zip(base_dir: str, rel_paths: list) -> tuple:
     return tmp_zip_path, f"supershare_selected_{len(rel_paths)}.zip"
 
 
-def delete_selected_items(base_dir: str, rel_paths: list) -> int:
-    count = 0
+def delete_selected_items(base_dir: str, rel_paths: list) -> dict:
+    deleted = 0
+    failed = []
     base_abs = os.path.abspath(base_dir)
     for rel_p in rel_paths:
-        target = safe_join(base_dir, rel_p)
-        if os.path.abspath(target) == base_abs or not os.path.exists(target):
-            continue
         try:
+            target = safe_join(base_dir, rel_p)
+            if os.path.abspath(target) == base_abs or not os.path.exists(target):
+                continue
             if os.path.isdir(target):
                 shutil.rmtree(target)
-                count += 1
+                deleted += 1
             elif os.path.isfile(target):
                 os.remove(target)
-                count += 1
-        except Exception:
-            continue
-    return count
+                deleted += 1
+        except Exception as exc:
+            failed.append({"path": rel_p, "error": str(exc)})
+    return {"deleted": deleted, "failed": failed}

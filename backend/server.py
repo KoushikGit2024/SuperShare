@@ -8,7 +8,8 @@ import asyncio
 import json
 from aiohttp import web
 
-from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR, cleanup_expired_transfer_jobs
+import time
+from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR, STATE, request_save, cleanup_expired_transfer_jobs
 from .api_routes import (
     status_handler,
     upload_permission_handler,
@@ -41,6 +42,7 @@ from .api_routes import (
     complete_transfer_handler,
     cancel_transfer_handler,
     _host_interfaces,
+    _expire_stale_jobs,
 )
 
 # --- Windows asyncio fix (prevents noisy ConnectionResetError on close, from NER_RMCH) ---
@@ -90,9 +92,17 @@ async def _start_discovery(app):
 
 
 async def _periodic_transfer_cleanup():
+    last_gc = 0
     while True:
-        await asyncio.sleep(60 * 60)
-        await asyncio.to_thread(cleanup_expired_transfer_jobs)
+        await asyncio.sleep(15)
+        with STATE["lock"]:
+            changed = _expire_stale_jobs()
+            busy = any(j.get("status") == "transferring" for j in STATE.get("transfer_jobs", {}).values())
+        if changed or busy:
+            request_save()
+        if time.time() - last_gc > 3600:
+            last_gc = time.time()
+            await asyncio.to_thread(cleanup_expired_transfer_jobs)
 
 
 async def _stop_discovery(app):
@@ -119,7 +129,7 @@ async def api_error_middleware(request: web.Request, handler):
 
 def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
-    app = web.Application(client_max_size=64 * 1024, middlewares=[api_error_middleware])
+    app = web.Application(client_max_size=64 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536}, middlewares=[api_error_middleware])
     app["port"] = port
     app["scheme"] = "https" if tls_info else "http"
     app["tls_info"] = tls_info or {}

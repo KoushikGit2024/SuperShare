@@ -56,8 +56,9 @@ def main():
     try:
         session = request(f"{base}/api/transfers", "POST", json.dumps({"name": path.name, "size": size, "path": destination}).encode(), {**headers, "Content-Type": "application/json"})
         transfer_id = session["id"]
+        chunk_size = session.get("chunk_size", CHUNK_SIZE)
         with path.open("rb") as source:
-            while chunk := source.read(CHUNK_SIZE):
+            while chunk := source.read(chunk_size):
                 digest.update(chunk)
                 chunk_hash = hashlib.sha256(chunk).hexdigest()
                 chunk_started = time.perf_counter()
