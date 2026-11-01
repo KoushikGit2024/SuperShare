@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "format": "prettier --write \"static/**/*.{js,css,html}\"",
+    "format:check": "prettier --check \"static/**/*.{js,css,html}\""
+  },
+  "devDependencies": {
+    "prettier": "3.9.10"
+  }
+}
+

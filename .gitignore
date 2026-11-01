@@ -34,5 +34,9 @@ benchmark-results/
 # OS/editor files
 .DS_Store
 Thumbs.db
-.vscode/
 .idea/
+
+# Node / JS tooling
+node_modules/
+package-lock.json
+

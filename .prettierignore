@@ -1,0 +1,5 @@
+node_modules/
+static/vendor/
+*.min.js
+*.min.css
+
