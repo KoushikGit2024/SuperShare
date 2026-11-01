@@ -2,7 +2,7 @@
 // Step 3: Browse shared files/folders, Tiles/List view switching, downloads with live size & progress,
 // inline preview trigger, batch ZIP download, deletion, and folder picker modal
 
-import { safeStorage, formatBytes, icon, showNotice, responseError, editText, confirmAction } from "../services/utils.js";
+import { safeStorage, formatBytes, formatDuration, icon, showNotice, responseError, editText, confirmAction } from "../services/utils.js";
 import { deviceHeaders } from "../services/device.js";
 import { canPreviewFile, openFilePreview, getFileExtension, PREVIEW_TYPES } from "../services/preview.js";
 
@@ -177,8 +177,34 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
     if (saveHandle) writer = await saveHandle.createWritable();
     const chunks = [];
     let received = 0;
+    const startedAt = performance.now();
+    let lastTime = startedAt;
+    let lastBytes = 0;
+    let rate = 0; // smoothed bytes per second
     item.state.textContent = total ? `Starting · ${formatBytes(total)}` : "Receiving…";
 
+    const render = () => {
+      const now = performance.now();
+      const elapsed = (now - lastTime) / 1000;
+      if (elapsed >= 0.25) {
+        const instant = (received - lastBytes) / elapsed;
+        rate = rate ? rate * 0.7 + instant * 0.3 : instant;
+        lastTime = now;
+        lastBytes = received;
+      }
+      if (total) {
+        item.progress.max = total;
+        item.progress.value = received;
+      } else {
+        item.progress.removeAttribute("value");
+      }
+      const pct = total ? ` · ${Math.min(100, Math.floor(received / total * 100))}%` : "";
+      const speed = rate > 0 ? ` · ${formatBytes(rate)}/s` : "";
+      const eta = total && rate > 0 ? ` · ETA ${formatDuration((total - received) / rate)}` : "";
+      item.state.textContent = `${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : " received"}${pct}${speed}${eta}`;
+    };
+
+    let lastRender = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -195,13 +221,11 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
       if (writer) await writer.write(value);
       else chunks.push(value);
 
-      if (total) {
-        item.progress.max = total;
-        item.progress.value = received;
-      } else {
-        item.progress.removeAttribute("value");
+      const now = performance.now();
+      if (now - lastRender >= 100) { // throttle DOM updates
+        lastRender = now;
+        render();
       }
-      item.state.textContent = `${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : " received"}`;
     }
 
     if (writer) {
@@ -214,9 +238,10 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
       setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
     }
 
+    const seconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
     item.progress.max = total || Math.max(received, 1);
     item.progress.value = total || received || 1;
-    item.state.textContent = `Saved · ${formatBytes(received)}`;
+    item.state.textContent = `Saved · ${formatBytes(received)} in ${formatDuration(seconds)} · avg ${formatBytes(received / seconds)}/s`;
     item.stop.remove();
     item.row.classList.add("download-complete");
   } catch (error) {
@@ -506,6 +531,12 @@ export async function loadHostModalFolders(dirPath) {
 }
 
 export function initExplorerPage() {
+  document.addEventListener("keydown", event => {
+    const modal = document.getElementById("hostModal");
+    if (event.key === "Escape" && modal && !modal.classList.contains("hidden")) {
+      modal.classList.add("hidden");
+    }
+  });
   document.getElementById("viewGridBtn")?.addEventListener("click", () => setFileViewMode("grid"));
   document.getElementById("viewListBtn")?.addEventListener("click", () => setFileViewMode("list"));
 

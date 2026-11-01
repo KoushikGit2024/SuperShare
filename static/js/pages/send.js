@@ -1,9 +1,9 @@
 // static/js/pages/send.js
 // Step 2: Choose what to send, file input, folder input, drag & drop, paste, collision handling, progress UI
 
-import { safeStorage, formatBytes, formatDuration, showNotice, friendlyError, actionDialog } from "../services/utils.js";
+import { safeStorage, formatBytes, formatDuration, showNotice, friendlyError, actionDialog, responseError, editText } from "../services/utils.js";
 import { localDeviceId, deviceHeaders, setConnectionState, localDeviceName, setLocalDeviceName } from "../services/device.js";
-import { relPath, filesFromDataTransfer, cancelActiveSession, postCreate, sendChunks, finishTransfer } from "../services/transfer.js";
+import { relPath, filesFromDataTransfer, cancelActiveSession, setActiveUpload, clearActiveUpload, postCreate, sendChunks, finishTransfer } from "../services/transfer.js";
 import { currentPath, fetchDirectory } from "./explorer.js";
 import { refreshDevices } from "./devices.js";
 import { navigateTo } from "../services/router.js";
@@ -154,6 +154,7 @@ export async function uploadFiles(files, retryName = null) {
 
             safeStorage.setItem(resumeKey, session.id);
             safeStorage.setItem(`supershare-transfer-time:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`, String(Date.now()));
+            setActiveUpload(session.id, resumeKey);
 
             let offset = session.offset || 0;
             const chunkSize = session.chunk_size || (4 * 1024 * 1024);
@@ -220,7 +221,9 @@ export async function uploadFiles(files, retryName = null) {
             resolve();
           })().catch(reject);
         });
+        clearActiveUpload();
       } catch (fileErr) {
+        clearActiveUpload();
         if (fileErr.name === "AbortError") throw fileErr;
         failedFiles.push(relative);
         queueEntry.state.textContent = `Failed · ${friendlyError(fileErr)}`;
@@ -288,7 +291,7 @@ export function initSendPage() {
   });
 
   document.getElementById("nameBrowserBtn")?.addEventListener("click", async () => {
-    const name = prompt("Name this device:", localDeviceName);
+    const name = await editText("Name this profile", "Give this browser profile a recognizable name:", "Display name", localDeviceName);
     if (!name) return;
     setLocalDeviceName(name);
     refreshDevices();

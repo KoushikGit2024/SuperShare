@@ -3,14 +3,15 @@
 
 import { safeStorage } from "./utils.js";
 
-const deviceIdKey = "supershare-device-id";
-export let localDeviceId = safeStorage.getItem(deviceIdKey);
+const deviceIdKey = "supershare_device_id";
+// Migrate the legacy hyphenated key so existing pairings keep their identity.
+export let localDeviceId = safeStorage.getItem(deviceIdKey) || safeStorage.getItem("supershare-device-id");
 if (!localDeviceId) {
   localDeviceId = crypto.randomUUID
     ? crypto.randomUUID()
     : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
-  safeStorage.setItem(deviceIdKey, localDeviceId);
 }
+safeStorage.setItem(deviceIdKey, localDeviceId);
 
 // Purge resume keys older than 7 days
 try {
@@ -68,9 +69,9 @@ export function setLocalDeviceName(name) {
 
 export function deviceHeaders() {
   return {
-    "X-SuperShare-Device": localDeviceId,
-    "X-SuperShare-Name": encodeURIComponent(localDeviceName),
-    "X-SuperShare-Type": encodeURIComponent(localDeviceType)
+    "X-Device-Id": localDeviceId,
+    "X-Device-Name": encodeURIComponent(localDeviceName),
+    "X-Device-Platform": encodeURIComponent(localDeviceType)
   };
 }
 

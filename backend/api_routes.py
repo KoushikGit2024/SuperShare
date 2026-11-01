@@ -1,32 +1,39 @@
-def _same_target(job, target):
-    wanted = job.get("requested_destination") or job.get("destination", "")
-    return os.path.normcase(os.path.realpath(wanted)) == os.path.normcase(os.path.realpath(target))
-
-import queue
-import threading
-import stat as _stat
-import zipfile
 """
 api_routes.py — aiohttp REST and streaming endpoints for SuperShare.
 """
-import os
-import json
-import errno
 import asyncio
-import urllib.parse
-import re
-import time
-import uuid
-import ipaddress
+import errno
 import hashlib
 import hmac
+import ipaddress
+import json
+import os
+import queue
+import re
 import secrets
-import socket
 import shutil
+import socket
+import stat as _stat
+import threading
+import time
+import urllib.parse
+import uuid
+import zipfile
+
 import aiohttp
 from aiohttp import web
 
-from .config import STATE, CHUNK_SIZE, MAX_CONCURRENT_TRANSFERS, PAIRING_CODE, save_persistent_state, request_save, record_transfer, ACTIVE_SLOT_STATES, STALE_TRANSFER_SECONDS
+from .config import (
+    STATE, CHUNK_SIZE, MAX_CONCURRENT_TRANSFERS, PAIRING_CODE, save_persistent_state,
+    request_save, record_transfer, ACTIVE_SLOT_STATES, STALE_TRANSFER_SECONDS,
+)
+
+
+# ConnectionResetError and BrokenPipeError are subclasses of ConnectionError.
+_ClientConnectionReset = getattr(aiohttp, "ClientConnectionResetError", ConnectionResetError)
+DISCONNECT_ERRORS = (ConnectionResetError, ConnectionError, _ClientConnectionReset)
+
+
 async def _json_body(request: web.Request) -> dict:
     try:
         body = await request.json()
@@ -36,7 +43,13 @@ async def _json_body(request: web.Request) -> dict:
         raise web.HTTPBadRequest(text="Expected a JSON object")
     return body
 
+
 OPEN_MODE = os.environ.get("SUPERSHARE_OPEN_MODE", "1") != "0"
+
+
+def _same_target(job, target):
+    wanted = job.get("requested_destination") or job.get("destination", "")
+    return os.path.normcase(os.path.realpath(wanted)) == os.path.normcase(os.path.realpath(target))
 
 
 def _paired_device(request):
@@ -275,15 +288,17 @@ async def _stream_zip(request, rel_paths, zip_name):
             try:
                 await resp.write(item)
                 sent += len(item)
-            except (ConnectionError, ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
-                # Client disconnected or cancelled the stream
-                await asyncio.to_thread(record_transfer, device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
+            except DISCONNECT_ERRORS:
+                record_transfer(device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
                 return resp
         try:
             await resp.write_eof()
-            await asyncio.to_thread(record_transfer, device_id, zip_name, sent, "completed", "Sent ZIP", device_id, "send")
-        except (ConnectionError, ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
-            pass
+            record_transfer(device_id, zip_name, sent, "completed", "Sent ZIP", device_id, "send")
+        except DISCONNECT_ERRORS:
+            record_transfer(device_id, zip_name, sent, "cancelled", "Client disconnected before the ZIP finished", device_id, "send")
+    except asyncio.CancelledError:
+        record_transfer(device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
+        raise
     finally:
         stop.set()
         await asyncio.gather(worker, return_exceptions=True)
@@ -315,10 +330,32 @@ def _safe_display_text(value, limit, fallback):
     return text.strip()[:limit] or fallback
 
 
-def _device_header_text(request, header, fallback):
-    # Custom HTTP headers are not a portable place for raw Unicode. The browser
-    # percent-encodes profile labels; decode both new clients and legacy ASCII.
-    return urllib.parse.unquote(request.headers.get(header, fallback), encoding="utf-8", errors="replace")
+_HEADER_ALIASES = {
+    "id": ("X-Device-Id", "X-SuperShare-Device"),
+    "name": ("X-Device-Name", "X-SuperShare-Name"),
+    "platform": ("X-Device-Platform", "X-SuperShare-Type"),
+}
+
+
+def _device_header(request, key, fallback=""):
+    headers_to_check = _HEADER_ALIASES.get(key)
+    if not headers_to_check:
+        # If key is already a full header name or unknown key, check it and aliases
+        headers_to_check = (key,)
+        for alias_tuple in _HEADER_ALIASES.values():
+            if key in alias_tuple:
+                headers_to_check = alias_tuple
+                break
+    for header in headers_to_check:
+        value = request.headers.get(header)
+        if value is not None:
+            return value
+    return fallback
+
+
+def _device_header_text(request, key, fallback):
+    # Browsers percent-encode profile labels in headers; decode them here.
+    return urllib.parse.unquote(_device_header(request, key, fallback), encoding="utf-8", errors="replace")
 
 
 def _public_transfers(limit=50):
@@ -480,14 +517,14 @@ async def diagnostics_handler(request: web.Request) -> web.Response:
 
 
 async def status_handler(request: web.Request) -> web.Response:
-    device_id = request.headers.get("X-SuperShare-Device", "").strip()
+    device_id = _device_header(request, "id").strip()
     local_request = _is_local_host_request(request)
     with STATE["lock"]:
         existing = STATE["devices"].get(device_id, {})
         may_update_identity = local_request or not existing.get("token_hash") or _authenticated_device(request, existing)
     if device_id and may_update_identity:
-        _touch_device(device_id, _device_header_text(request, "X-SuperShare-Name", "Unknown device"),
-                      _device_header_text(request, "X-SuperShare-Type", "Device"), request.remote, create=local_request)
+        _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
+                      _device_header_text(request, "platform", "Device"), request.remote, create=local_request)
     if local_request and device_id:
         changed = False
         with STATE["lock"]:
@@ -512,7 +549,7 @@ async def status_handler(request: web.Request) -> web.Response:
 
 
 async def upload_permission_handler(request: web.Request) -> web.Response:
-    device_id = request.headers.get("X-SuperShare-Device", "").strip()
+    device_id = _device_header(request, "id").strip()
     if not device_id:
         raise web.HTTPBadRequest(text="Device identity is required")
     local_request = _is_local_host_request(request)
@@ -523,8 +560,8 @@ async def upload_permission_handler(request: web.Request) -> web.Response:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         raise web.HTTPBadRequest(text="Invalid device identity")
     if may_update_identity:
-        _touch_device(device_id, _device_header_text(request, "X-SuperShare-Name", "Unknown device"),
-                      _device_header_text(request, "X-SuperShare-Type", "Device"), request.remote, create=local_request)
+        _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
+                      _device_header_text(request, "platform", "Device"), request.remote, create=local_request)
     local = _is_local_host_request(request)
     device = _paired_device(request)
     perms = {"read": True, "write": True} if (local or OPEN_MODE) else _device_permissions(device)
@@ -578,7 +615,7 @@ async def pair_device_handler(request: web.Request) -> web.Response:
 
 
 async def confirm_pairing_handler(request: web.Request) -> web.Response:
-    device_id = request.headers.get("X-SuperShare-Device", "").strip()
+    device_id = _device_header(request, "id").strip()
     with STATE["lock"]:
         device = STATE["devices"].get(device_id, {})
         if not _authenticated_device(request, device):
@@ -688,7 +725,7 @@ def _require_share_access(request, permission="read"):
 def _authorize_transfer_write(request):
     _require_share_access(request, "write")
     device = _paired_device(request)
-    return device["id"] if device else (request.headers.get("X-SuperShare-Device", "").strip() or "local-dashboard")
+    return device["id"] if device else (_device_header(request, "id").strip() or "local-dashboard")
 
 
 def _authenticated_device(request, device):
@@ -711,7 +748,7 @@ async def rename_device_handler(request: web.Request) -> web.Response:
     device_id = body.get("id", "")
     name = _safe_display_text(body.get("name", ""), 80, "")
     local_request = _is_local_host_request(request)
-    requester_id = request.headers.get("X-SuperShare-Device", "").strip()
+    requester_id = _device_header(request, "id").strip()
     with STATE["lock"]:
         device = STATE["devices"].get(device_id)
         if not device or not name:

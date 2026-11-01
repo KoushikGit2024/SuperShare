@@ -1,7 +1,7 @@
 // static/js/pages/devices.js
 // Access Control & Connected Devices listing, rename, forget, and status indicators
 
-import { showNotice, responseError, editText, confirmAction, icon, listBusy } from "../services/utils.js";
+import { showNotice, responseError, editText, confirmAction, icon, listBusy, formatBytes } from "../services/utils.js";
 import { localDeviceId, deviceHeaders } from "../services/device.js";
 
 export async function deviceAction(url, body) {
@@ -120,6 +120,36 @@ export async function refreshDevices() {
   }
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+export function renderThroughput(transfers) {
+  const svg = document.getElementById("throughputChart");
+  const peakEl = document.getElementById("throughputPeak");
+  if (!svg) return;
+  const BUCKETS = 15;
+  const nowMin = Math.floor(Date.now() / 60000);
+  const bytes = new Array(BUCKETS).fill(0);
+  transfers.forEach(t => {
+    if (t.status !== "completed" || !t.timestamp || String(t.device_id || "").startsWith("benchmark-")) return;
+    const age = nowMin - Math.floor(t.timestamp / 60);
+    if (age >= 0 && age < BUCKETS) bytes[BUCKETS - 1 - age] += Number(t.size) || 0;
+  });
+  const peak = Math.max(...bytes);
+  svg.replaceChildren();
+  const barWidth = 300 / BUCKETS;
+  bytes.forEach((value, index) => {
+    const height = peak ? Math.max(value ? 2 : 0, (value / peak) * 66) : 0;
+    const bar = document.createElementNS(SVG_NS, "rect");
+    bar.setAttribute("x", String(index * barWidth + 1));
+    bar.setAttribute("y", String(70 - height));
+    bar.setAttribute("width", String(barWidth - 2));
+    bar.setAttribute("height", String(height));
+    bar.setAttribute("class", "throughput-bar");
+    svg.appendChild(bar);
+  });
+  if (peakEl) peakEl.textContent = peak ? `Peak ${formatBytes(peak)}/min` : "No completed transfers yet";
+}
+
 export function renderTransfers(transfers, hostDashboard) {
   const list = document.getElementById("transferList");
   if (!list || listBusy(list)) return;
@@ -129,6 +159,7 @@ export function renderTransfers(transfers, hostDashboard) {
     list.innerHTML = '<li class="empty-state">Transfer activity logs are available on the laptop dashboard.</li>';
     return;
   }
+  renderThroughput(transfers);
 
   const filter = document.getElementById("transferFilter")?.value || "all";
   const activeStates = ["queued", "transferring", "interrupted", "verifying"];
@@ -156,7 +187,7 @@ export function renderTransfers(transfers, hostDashboard) {
     info.append(name, meta);
 
     const st = document.createElement("span");
-    st.className = `transfer-status-badge ${t.status}`;
+    st.className = `transfer-state ${t.status}`;
     st.textContent = t.status;
     li.append(info, st);
     list.appendChild(li);

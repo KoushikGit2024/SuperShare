@@ -7,6 +7,7 @@ import socket
 import asyncio
 import json
 import re
+import aiohttp
 from aiohttp import web
 
 import time
@@ -139,7 +140,9 @@ async def security_headers_middleware(request: web.Request, handler):
     resp = await handler(request)
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
-    resp.headers.setdefault("X-Frame-Options", "DENY")
+    # The in-page PDF preview frames /api/preview from the same origin only.
+    frame_policy = "SAMEORIGIN" if request.path == "/api/preview" else "DENY"
+    resp.headers.setdefault("X-Frame-Options", frame_policy)
     if request.path == "/" or request.path.startswith("/static/"):
         resp.headers["Cache-Control"] = "no-cache"
         resp.headers.setdefault(
@@ -149,13 +152,27 @@ async def security_headers_middleware(request: web.Request, handler):
         )
     return resp
 
+# ClientConnectionResetError exists in aiohttp >= 3.10; fall back gracefully.
+_DISCONNECT_ERRORS = tuple(
+    exc for exc in (ConnectionError, getattr(aiohttp, "ClientConnectionResetError", None)) if exc
+)
+
+
 @web.middleware
 async def api_error_middleware(request: web.Request, handler):
     try:
         return await handler(request)
-    except (ConnectionError, ConnectionResetError):
-        # Client aborted or disconnected from TCP socket during download or upload
+    except _DISCONNECT_ERRORS:
+        # Client aborted or disconnected mid upload/download/zip stream
         return web.Response(status=499, text="Client Closed Connection")
+    except asyncio.CancelledError:
+        # aiohttp cancels handlers when the client goes away. Only absorb the
+        # cancellation in that case; re-raise otherwise so server shutdown
+        # still works.
+        transport = request.transport
+        if transport is None or transport.is_closing():
+            return web.Response(status=499, text="Client Closed Connection")
+        raise
     except PermissionError as exc:
         raise web.HTTPForbidden(text=str(exc)) from exc
     except FileNotFoundError as exc:

@@ -6,6 +6,14 @@ import { localDeviceId, deviceHeaders } from "./device.js";
 
 export let activeUpload = { id: null, resumeKey: null };
 
+export function setActiveUpload(id, resumeKey) {
+  activeUpload = { id, resumeKey };
+}
+
+export function clearActiveUpload() {
+  activeUpload = { id: null, resumeKey: null };
+}
+
 export function cancelActiveSession() {
   const { id, resumeKey } = activeUpload;
   if (!id) return;

@@ -10,7 +10,7 @@ import sqlite3
 import secrets
 import sys
 import shutil
-
+from contextlib import closing
 BACKEND_DIR = Path(__file__).resolve().parent
 BASE_DIR = BACKEND_DIR.parent
 FROZEN_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
@@ -136,8 +136,6 @@ def load_persistent_state():
         STATE["transfers"].extend(legacy.get("transfers", [])[-200:])
     save_persistent_state()
 
-
-from contextlib import closing
 
 _db_write_lock = threading.Lock()
 _dirty = threading.Event()

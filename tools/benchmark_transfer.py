@@ -40,7 +40,7 @@ def main():
     path = args.file.resolve(strict=True)
     size = path.stat().st_size
     base = args.host.rstrip("/")
-    headers = {"X-SuperShare-Device": args.device_id, "X-SuperShare-Name": "SuperShare benchmark", "X-SuperShare-Type": "Benchmark"}
+    headers = {"X-Device-Id": args.device_id, "X-Device-Name": "SuperShare benchmark", "X-Device-Platform": "Benchmark"}
     if args.cookie:
         headers["Cookie"] = f"supershare_token={args.cookie}"
     destination = f"benchmark-{uuid.uuid4().hex[:10]}-{path.name}"
