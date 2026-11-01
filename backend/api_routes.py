@@ -318,7 +318,13 @@ def _public_transfers(limit=50):
                               "size": job.get("size"), "offset": job.get("offset"), "status": job.get("status"),
                               "timestamp": job.get("created_at"), "updated_at": job.get("updated_at"),
                               "destination": job.get("destination"), "detail": job.get("error", ""),
-                              "relative_path": os.path.relpath(job.get("destination", ""), STATE["share_dir"]).replace(os.sep, "/") if job.get("destination") else None})
+                              "relative_path": (
+    (lambda dest, share: (
+        os.path.relpath(dest, share).replace(os.sep, "/")
+        if dest and os.path.splitdrive(dest)[0].lower() == os.path.splitdrive(share)[0].lower()
+        else None
+    ))(job.get("destination", ""), STATE["share_dir"])
+)})
         return sorted(items, key=lambda item: item.get("timestamp", item.get("updated_at", 0)))[-limit:]
 
 
