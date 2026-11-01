@@ -1,3 +1,9 @@
+const safeStorage = {
+  getItem(k) { try { return localStorage.getItem(k); } catch (_) { return this[k] || null; } },
+  setItem(k, v) { try { localStorage.setItem(k, v); } catch (_) { this[k] = String(v); } },
+  removeItem(k) { try { localStorage.removeItem(k); } catch (_) { delete this[k]; } }
+};
+
 let fileViewMode = safeStorage.getItem("supershare-file-view-mode") || "grid";
 
 function setFileViewMode(mode) {
@@ -346,12 +352,6 @@ let currentPath = "";
 let currentItems = [];
 let selectedItems = new Map();
 let currentHostBrowsePath = "";
-
-const safeStorage = {
-  getItem(k) { try { return localStorage.getItem(k); } catch (_) { return this[k] || null; } },
-  setItem(k, v) { try { localStorage.setItem(k, v); } catch (_) { this[k] = String(v); } },
-  removeItem(k) { try { localStorage.removeItem(k); } catch (_) { delete this[k]; } }
-};
 
 const deviceIdKey = "supershare-device-id";
 let localDeviceId = safeStorage.getItem(deviceIdKey);
