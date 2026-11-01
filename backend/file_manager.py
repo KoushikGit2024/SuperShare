@@ -15,7 +15,7 @@ def sanitize_relative_path(rel: str) -> str:
             part = "_" + part
         if part.lower().startswith(".supershare-") or part.lower().startswith(".temp_"):
             raise PermissionError("Reserved internal file name")
-        parts.append(part[:200])
+        parts.append(part[:200].rstrip(" .") or "_")
     if not parts:
         raise ValueError("Empty path")
     return "/".join(parts)

@@ -435,9 +435,8 @@ def main():
     print()
 
     try:
-        webbrowser.open(
-            f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
-        )
+        url = f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
+        threading.Timer(1.2, webbrowser.open, [url]).start()
 
         if args.reload:
             start_reloader_watcher()

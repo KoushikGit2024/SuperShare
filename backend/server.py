@@ -118,6 +118,21 @@ async def _stop_discovery(app):
 
 
 @web.middleware
+async def security_headers_middleware(request: web.Request, handler):
+    resp = await handler(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    if request.path == "/" or request.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; "
+            "worker-src 'self' blob:; frame-ancestors 'none'"
+        )
+    return resp
+
+@web.middleware
 async def api_error_middleware(request: web.Request, handler):
     try:
         return await handler(request)
@@ -129,7 +144,7 @@ async def api_error_middleware(request: web.Request, handler):
 
 def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
-    app = web.Application(client_max_size=64 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536}, middlewares=[api_error_middleware])
+    app = web.Application(client_max_size=1024 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536}, middlewares=[api_error_middleware, security_headers_middleware])
     app["port"] = port
     app["scheme"] = "https" if tls_info else "http"
     app["tls_info"] = tls_info or {}

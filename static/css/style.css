@@ -26,7 +26,7 @@ body { margin: 0; padding: 16px 16px 96px 16px; background: var(--bg); color: va
   width: 20px;
   height: 20px;
 }
-.badge { display: inline-block; margin-top: 8px; background: #1d2024; color: #b9c2cd; font-size: 0.78rem; font-weight: 600; padding: 5px 10px; border-radius: 6px; }
+.badge { display: inline-block; margin-top: 8px; border: 1px solid #634a12; background: #251e10; color: #fef08a; font-size: 0.78rem; font-weight: 600; padding: 5px 10px; border-radius: 6px; }
 .host-root-bar { margin-top: 14px; display: flex; align-items: center; justify-content: flex-start; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; }
 .host-root-text { background: #141416; padding: 7px 10px; border-radius: 7px; border: 1px solid var(--border); max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cbd5e1; }
 .section-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
@@ -504,3 +504,24 @@ input, select, textarea { font-size: 16px; }
 body:has(dialog[open]), body:has(#hostModal:not(.hidden)) { overflow: hidden; }
 .action-dialog-card { max-height: calc(100dvh - 24px); overflow: auto; }
 .modal-card { max-height: calc(100dvh - 32px); }
+
+/* --- Storage & Cache Section Metrics (CRITICAL 5) --- */
+.storage-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 16px; }
+.storage-metrics > div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: #141416; }
+.storage-metrics strong { font-size: 1.25rem; color: #fef08a; }
+.storage-metrics span:last-child { color: var(--muted); font-size: 0.78rem; }
+
+.network-card { border-color: #4a3e1b; }
+.eyebrow { color: #c9a54a; }
+.route-arrow { color: #a8924f; }
+.drop-zone.drag-active { background: #241e0e; border-color: var(--primary); }
+.network-help-content pre code { color: #f3e7b5; }
+.section-nav a:hover { background: #241f12; }
+
+/* --- iOS and Coarse Pointer Enhancements (UI/UX 21e) --- */
+@media (pointer: coarse) {
+  summary { padding-block: 12px; }
+  .transfer-filter-label select, .action-dialog-input-wrap input { min-height: 44px; }
+}
+html:has(dialog[open]) { overflow: hidden; }
+.action-dialog-card, .modal-card { overscroll-behavior: contain; }

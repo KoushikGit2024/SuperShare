@@ -22,7 +22,7 @@ SHARE_DIR = DATA_DIR / "shared_files"
 os.makedirs(SHARE_DIR, exist_ok=True)
 
 HOST = "0.0.0.0"
-PORT = 80
+PORT = int(os.environ.get("SUPERSHARE_PORT", "8765"))
 CHUNK_SIZE = 4 * 1024 * 1024  # 4 MB streaming chunks for balanced network/retry resilience
 MAX_CONCURRENT_TRANSFERS = 2
 TRANSFER_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -97,7 +97,7 @@ def _remove_managed_partial(job):
 
 
 def load_persistent_state():
-    with _connect_database() as connection:
+    with _db_write_lock, closing(_connect_database()) as connection, connection:
         row = connection.execute("SELECT value FROM settings WHERE key='share_dir'").fetchone()
         if row and os.path.isdir(row[0]):
             STATE["share_dir"] = os.path.abspath(row[0])
@@ -214,7 +214,7 @@ def cleanup_expired_transfer_jobs(now=None):
         for job_id in expired:
             STATE["transfer_jobs"].pop(job_id, None)
         if expired:
-            with _connect_database() as connection:
+            with _db_write_lock, closing(_connect_database()) as connection, connection:
                 connection.executemany("DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired])
     return len(expired)
 
@@ -244,8 +244,9 @@ def record_transfer(device_id, filename, size, status="completed", detail="", de
 def clear_transfers_history():
     with STATE["lock"]:
         STATE["transfers"].clear()
-        with _connect_database() as connection:
-            connection.execute("DELETE FROM transfers")
+    with _db_write_lock, closing(_connect_database()) as connection, connection:
+        connection.execute("DELETE FROM transfers")
+    request_save()
     return True
 
 

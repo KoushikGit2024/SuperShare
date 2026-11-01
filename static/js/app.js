@@ -1,3 +1,116 @@
+async function waitForHost(signal) {
+  for (let i = 0; ; i++) {
+    signal?.throwIfAborted();
+    const probe = new AbortController();
+    const timer = setTimeout(() => probe.abort(), 4000);
+    const relay = () => probe.abort();
+    signal?.addEventListener("abort", relay, { once: true });
+    try {
+      if ((await fetch("/api/network", { cache: "no-store", signal: probe.signal })).ok) return;
+    } catch (_) {
+      // Host still unreachable
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", relay);
+    }
+    await sleep(Math.min(5000, 500 * 2 ** i), signal);
+  }
+}
+
+async function postCreate(body, headers, signal, onWait) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch("/api/transfers", {
+        method: "POST", headers, credentials: "same-origin", signal, body: JSON.stringify(body)
+      });
+      if (r.status !== 429 || i >= 60) return r;
+      onWait("Waiting for a free transfer slot on the laptop…");
+      const retrySec = Number(r.headers.get("Retry-After")) || 3;
+      await sleep(retrySec * 1000, signal);
+    } catch (e) {
+      if (e.name === "AbortError" || !(e instanceof TypeError) || i >= 60) throw e;
+      onWait("Connection lost. Waiting for the laptop…");
+      await waitForHost(signal);
+    }
+  }
+}
+
+async function finishTransfer(session, headers, signal, onProgress = () => {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch(`/api/transfers/${session.id}/complete`, {
+        method: "POST", headers, credentials: "same-origin", signal, body: "{}"
+      });
+      if (r.status === 202) {
+        // Verification ongoing: poll status for progress feedback (UI/UX 22)
+        try {
+          const stRes = await fetch(`/api/transfers/${session.id}`, { headers: deviceHeaders(), signal });
+          if (stRes.ok) {
+            const stData = await stRes.json();
+            if (stData.verified) onProgress(stData.verified, stData.size);
+          }
+        } catch (_) {}
+        await sleep(2000, signal);
+        continue;
+      }
+      if (r.status === 409) {
+        const info = await r.clone().json().catch(() => null);
+        if (info?.error === "chunks_corrupt") return info;
+      }
+      if (!r.ok) throw Object.assign(new Error(await responseError(r)), { status: r.status });
+      return r.json();
+    } catch (e) {
+      if (e.name === "AbortError" || !(e instanceof TypeError) || attempt >= 30) throw e;
+      await waitForHost(signal);
+    }
+  }
+}
+
+let activeUpload = { id: null, resumeKey: null };
+
+function cancelActiveSession() {
+  const { id, resumeKey } = activeUpload;
+  if (!id) return;
+  safeStorage.removeItem(resumeKey);
+  fetch(`/api/transfers/${id}/cancel`, {
+    method: "POST",
+    credentials: "same-origin",
+    keepalive: true,
+    headers: deviceHeaders()
+  }).catch(() => {});
+  activeUpload = { id: null, resumeKey: null };
+}
+
+const relPath = file => file._relativePath || file.webkitRelativePath || file.name;
+
+async function filesFromDataTransfer(dt) {
+  if (!dt) return [];
+  const entries = Array.from(dt.items || []).filter(i => i.kind === "file")
+    .map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.length) return Array.from(dt.files || []);
+  const out = [];
+  const readAll = reader => new Promise((resolve, reject) => {
+    const all = [];
+    const next = () => reader.readEntries(batch => batch.length ? (all.push(...batch), next()) : resolve(all), reject);
+    next();
+  });
+  const walk = async (entry, prefix) => {
+    if (entry.isFile) {
+      const file = await new Promise((res, rej) => entry.file(res, rej));
+      Object.defineProperty(file, "_relativePath", { value: prefix + entry.name });
+      out.push(file);
+    } else if (entry.isDirectory) {
+      for (const child of await readAll(entry.createReader())) {
+        await walk(child, `${prefix}${entry.name}/`);
+      }
+    }
+  };
+  for (const entry of entries) {
+    await walk(entry, "");
+  }
+  return out;
+}
+
 const sleep = (ms, signal) => new Promise((res, rej) => {
   const t = setTimeout(res, ms);
   signal?.addEventListener("abort", () => { clearTimeout(t); rej(new DOMException("Aborted", "AbortError")); }, { once: true });
@@ -33,7 +146,7 @@ function putChunk(url, body, headers, signal, onProgress) {
   });
 }
 
-async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes }) {
+async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes, onStatus = () => {} }) {
   const inner = new AbortController();
   signal.addEventListener("abort", () => inner.abort(), { once: true });
   let cursor = 0;
@@ -45,7 +158,7 @@ async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes }
         const buf = await file.slice(off, Math.min(off + chunkSize, file.size)).arrayBuffer();
         const hash = await sha256Buf(buf);
         let sent = 0;
-        for (let attempt = 0; ; attempt++) {
+        for (let failures = 0; ; ) {
           try {
             await putChunk(`/api/transfers/${session.id}/chunk`, buf,
               { ...deviceHeaders(), "X-Chunk-Offset": String(off), "X-Chunk-SHA256": hash },
@@ -55,9 +168,13 @@ async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes }
           } catch (e) {
             onBytes(-sent);
             sent = 0;
-            if (e.name === "AbortError" || !isRetryable(e) || attempt >= 8) throw e;
-            await waitOnline(inner.signal);
-            await sleep(backoff(attempt), inner.signal);
+            if (e.name === "AbortError" || !isRetryable(e) || ++failures > (e.network ? 60 : 8)) throw e;
+            if (e.network) {
+              onStatus("Connection lost. Waiting for the laptop…");
+              await waitForHost(inner.signal);
+            } else {
+              await sleep(backoff(failures), inner.signal);
+            }
           }
         }
       }
@@ -233,7 +350,7 @@ function setConnectionState(text, type = "pending") {
 
 let preferredConnectionUrl = "";
 let networkTlsEnabled = false;
-const pairingCodeFromQr = new URLSearchParams(location.search).get("pair_code");
+let pairingCodeFromQr = new URLSearchParams(location.search).get("pair_code");
 async function refreshNetworkInfo() {
   const addresses = document.getElementById("networkAddresses");
   const status = document.getElementById("networkStatus");
@@ -359,7 +476,7 @@ async function checkUploadPermission() {
   const phrasePanel = document.getElementById("pairPhrasePanel");
   phrasePanel.classList.toggle("hidden", !result.paired || result.pair_confirmed || !result.verification_phrase);
   if (result.verification_phrase) document.getElementById("pairPhrase").textContent = result.verification_phrase;
-  setConnectionState(result.allowed ? "Approved to send" : canRead ? "Host granted read-only access" : result.approved ? "Host granted send-only access" : result.paired ? "Waiting for host approval" : "Pair with the host", result.allowed || canRead ? "online" : "pending");
+  if (!uploadInProgress) setConnectionState(result.allowed ? "Approved to send" : canRead ? "Host granted read-only access" : result.approved ? "Host granted send-only access" : result.paired ? "Waiting for host approval" : "Pair with the host", result.allowed || canRead ? "online" : "pending");
   const localHost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
   document.getElementById("pairDeviceBtn").classList.toggle("hidden", result.paired || localHost);
   if (!result.paired && !localHost) setConnectionState("Pair this device to continue", "pending");
@@ -371,7 +488,14 @@ async function pairThisDevice() {
   if (!code) return;
   try {
     const response = await fetch("/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, id: localDeviceId, name: localDeviceName, type: localDeviceType }) });
-    if (!response.ok) throw new Error(await responseError(response));
+    if (!response.ok) {
+      if (response.status === 403 && pairingCodeFromQr) {
+        pairingCodeFromQr = null;
+        history.replaceState({}, "", location.pathname);
+        throw new Error("That pairing link has expired (the host restarted?). Tap Pair with host and enter the current code.");
+      }
+      throw new Error(await responseError(response));
+    }
     const result = await response.json();
     if (pairingCodeFromQr) history.replaceState({}, "", location.pathname);
     showNotice("Compare the verification phrase on the laptop, then confirm it here.", "success");
@@ -406,6 +530,10 @@ async function refreshDevices() {
     document.getElementById("nativePickerBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("showPairQrBtn").classList.toggle("hidden", !data.host_dashboard);
     document.getElementById("copyTlsFingerprintBtn").classList.toggle("hidden", !data.host_dashboard || !networkTlsEnabled);
+    document.getElementById("deleteSelectedBtn")?.classList.toggle("hidden", !data.host_dashboard);
+    document.getElementById("quickQrBtn")?.classList.toggle("hidden", !data.host_dashboard);
+    document.getElementById("tab-storage-mgr")?.classList.toggle("hidden", !data.host_dashboard);
+    if (!data.host_dashboard && activeTabId === "storageMgrSection") switchTab("sendSection");
     document.getElementById("destinationName").textContent = data.host_name || "This host";
     window._shareRoot = data.share_root || "";
     document.getElementById("destinationPath").textContent = data.share_root ? `${data.share_root}${currentPath ? `\\${currentPath.replaceAll("/", "\\")}` : ""}` : "Pair and get host approval to view the destination";
@@ -452,7 +580,13 @@ async function refreshDevices() {
         if (data.host_dashboard && device.id !== localDeviceId) {
           const mk = (label, fn, cls = "outline") => { const b = document.createElement("button"); b.className = `btn-xs ${cls}`; b.textContent = label; b.onclick = fn; return b; };
           const grant = remember => async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions: { read: true, write: true }, remember })) refreshDevices(); };
-          const ready = device.paired && device.pair_confirmed;
+          const ready = device.paired;
+          if (device.paired && !device.pair_confirmed && device.verification_phrase) {
+            const phraseCode = document.createElement("code");
+            phraseCode.style.cssText = "display:block;width:100%;margin-bottom:6px;color:#fef08a;font-weight:bold;";
+            phraseCode.textContent = `Compare phrase: ${device.verification_phrase}`;
+            controls.appendChild(phraseCode);
+          }
           const allow = mk("Allow 15 min", grant(false), "accent"); allow.disabled = !ready;
           const always = mk("Always allow", grant(true)); always.disabled = !ready;
           const revoke = mk("Revoke", async () => {
@@ -571,7 +705,10 @@ function renderTransfers(transfers) {
       retry.onclick = () => {
         const input = document.createElement("input"); input.type = "file";
         const targetPath = t.relative_path || t.filename;
-        input.onchange = () => { if (input.files?.length) uploadFiles(input.files, targetPath); };
+        input.onchange = () => {
+          if (input.files?.length === 1) uploadFiles(input.files, targetPath);
+          else showNotice("Choose exactly the one file that failed.", "info");
+        };
         input.click();
       };
       li.appendChild(retry);
@@ -658,12 +795,48 @@ function sha256Bytes(message) {
   return [...hash].map(value => value.toString(16).padStart(8, "0")).join("");
 }
 
+let hashWorkers = null, hashSeq = 0;
+const hashPending = new Map();
+
+function ensureHashWorkers() {
+  if (hashWorkers) return hashWorkers;
+  try {
+    const source = `const SHA256_K = new Uint32Array([${Array.from(SHA256_K).join(",")}]);
+      ${sha256Bytes.toString()}
+      onmessage = e => postMessage({ id: e.data.id, hash: sha256Bytes(new Uint8Array(e.data.buf)) });`;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    hashWorkers = Array.from({ length: Math.min(2, navigator.hardwareConcurrency || 2) }, () => {
+      const w = new Worker(url);
+      w.onmessage = ({ data }) => {
+        hashPending.get(data.id)?.resolve(data.hash);
+        hashPending.delete(data.id);
+      };
+      w.onerror = () => {
+        for (const p of hashPending.values()) p.reject(new Error("hash worker failed"));
+        hashPending.clear();
+      };
+      return w;
+    });
+  } catch (_) {
+    hashWorkers = [];
+  }
+  return hashWorkers;
+}
+
 async function sha256Buf(buf) {
   if (globalThis.crypto?.subtle) {
     return [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))].map(b => b.toString(16).padStart(2, "0")).join("");
   }
-  return sha256Bytes(new Uint8Array(buf));
+  const workers = ensureHashWorkers();
+  if (!workers.length) return sha256Bytes(new Uint8Array(buf));
+  const copy = buf.slice(0);
+  return new Promise((resolve, reject) => {
+    const id = ++hashSeq;
+    hashPending.set(id, { resolve, reject });
+    workers[id % workers.length].postMessage({ id, buf: copy }, [copy]);
+  }).catch(() => sha256Bytes(new Uint8Array(buf)));
 }
+
 
 async function sha256Blob(blob) {
   const bytes = await blob.arrayBuffer();
@@ -832,7 +1005,8 @@ async function startTrackedDownload(url, filename, expectedSize = 0) {
       const blob = new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" });
       const objectUrl = URL.createObjectURL(blob);
       triggerBrowserDownload(objectUrl, filename);
-      requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
+      chunks.length = 0;
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
     }
     item.progress.max = total || Math.max(received, 1); item.progress.value = total || received || 1;
     item.state.textContent = `Saved · ${formatBytes(received)}`;
@@ -908,6 +1082,8 @@ document.getElementById("clearSelectionBtn").onclick = () => {
   document.querySelectorAll(".file-item").forEach(item => item.classList.remove("selected")); updateSelectionUI();
 };
 
+let uploadInProgress = false;
+
 async function uploadFiles(files, retryName = null) {
   if (!files.length) return;
   if (typeof switchTab === "function" && activeTabId !== "sendSection") switchTab("sendSection", false);
@@ -920,20 +1096,26 @@ async function uploadFiles(files, retryName = null) {
   const cancelBtn = document.getElementById("cancelUploadBtn");
 
   box.classList.remove("hidden");
-  if (cancelBtn) {
-    cancelBtn.classList.remove("hidden");
-  }
+  if (cancelBtn) cancelBtn.classList.remove("hidden");
   document.querySelector(".running-indicator")?.classList.remove("complete", "failed");
 
+  uploadInProgress = true;
   const uploadAbort = new AbortController();
   if (cancelBtn) {
-    cancelBtn.onclick = () => uploadAbort.abort();
+    cancelBtn.onclick = () => {
+      uploadAbort.abort();
+      cancelActiveSession();
+    };
   }
 
   let wakeLock = null;
   try {
     wakeLock = await navigator.wakeLock?.request("screen");
   } catch (_) {}
+  if (!wakeLock && !uploadFiles.warnedSleep) {
+    uploadFiles.warnedSleep = true;
+    showNotice("Keep this screen on until the transfer finishes. Over HTTP the browser cannot prevent sleep.", "info");
+  }
 
   let skippedFiles = 0;
   const failedFiles = [];
@@ -945,6 +1127,7 @@ async function uploadFiles(files, retryName = null) {
     showNotice(friendlyError(error), "error");
     if (cancelBtn) cancelBtn.classList.add("hidden");
     wakeLock?.release();
+    uploadInProgress = false;
     return;
   }
 
@@ -953,7 +1136,7 @@ async function uploadFiles(files, retryName = null) {
   queue.classList.remove("hidden");
 
   const queueEntries = Array.from(files, (file, index) => {
-    const relative = retryName || file.webkitRelativePath || file.name;
+    const relative = retryName || relPath(file);
     const row = document.createElement("li");
     const fileName = document.createElement("span"); fileName.className = "upload-queue-name"; fileName.textContent = `${index + 1}. ${relative} · ${formatBytes(file.size)}`;
     const state = document.createElement("span"); state.className = "upload-queue-state"; state.textContent = "Queued"; state.setAttribute("aria-live", "polite");
@@ -966,8 +1149,8 @@ async function uploadFiles(files, retryName = null) {
     for (let index = 0; index < files.length; index++) {
       uploadAbort.signal.throwIfAborted();
       const file = files[index];
-      const relative = retryName || file.webkitRelativePath || file.name;
-      const destination = currentPath ? `${currentPath}/${relative}` : relative;
+      const relative = retryName || relPath(file);
+      const destination = retryName ? retryName : (currentPath ? `${currentPath}/${relative}` : relative);
       const queueEntry = queueEntries[index];
 
       queueEntry.state.textContent = "Preparing";
@@ -986,10 +1169,9 @@ async function uploadFiles(files, retryName = null) {
             const resumeId = safeStorage.getItem(resumeKey) || "";
             let collision = "ask";
 
-            let created = await fetch("/api/transfers", {
-              method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal,
-              body: JSON.stringify({ name: file.name, size: file.size, path: destination, resume_id: resumeId, collision })
-            });
+            let created = await postCreate({
+              name: file.name, size: file.size, path: destination, resume_id: resumeId, collision
+            }, headers, uploadAbort.signal, t => { speed.textContent = t; });
 
             if (created.status === 409) {
               collision = await actionDialog({
@@ -1010,10 +1192,9 @@ async function uploadFiles(files, retryName = null) {
                 resolve();
                 return;
               }
-              created = await fetch("/api/transfers", {
-                method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal,
-                body: JSON.stringify({ name: file.name, size: file.size, path: destination, collision })
-              });
+              created = await postCreate({
+                name: file.name, size: file.size, path: destination, collision
+              }, headers, uploadAbort.signal, t => { speed.textContent = t; });
             }
 
             if (!created.ok) {
@@ -1039,6 +1220,7 @@ async function uploadFiles(files, retryName = null) {
 
             safeStorage.setItem(resumeKey, session.id);
             safeStorage.setItem(`supershare-transfer-time:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`, String(Date.now()));
+            activeUpload = { id: session.id, resumeKey };
 
             let offset = session.offset || 0;
             const resumeOffset = offset;
@@ -1054,10 +1236,17 @@ async function uploadFiles(files, retryName = null) {
               chunkOffsets.push(pos);
             }
 
+            let lastT = start, lastB = uploadedBytes, ema = 0;
             const render = () => {
+              const now = Date.now();
+              if (now - lastT >= 1000) {
+                const inst = Math.max(0, uploadedBytes - lastB) / ((now - lastT) / 1000);
+                ema = ema ? ema * 0.7 + inst * 0.3 : inst;
+                lastT = now;
+                lastB = uploadedBytes;
+              }
               const pct = file.size ? Math.min(100, Math.round(uploadedBytes / file.size * 100)) : 100;
-              const now = Date.now(), secs = Math.max((now - start) / 1000, 0.001);
-              const rate = (uploadedBytes - resumeOffset) / secs;
+              const rate = ema;
               const eta = rate > 0 ? ` · ETA ${formatDuration((file.size - uploadedBytes) / rate)}` : "";
               bar.style.width = `${pct}%`;
               percent.textContent = `${pct}%`;
@@ -1068,22 +1257,33 @@ async function uploadFiles(files, retryName = null) {
 
             await sendChunks({
               session, file, offsets: chunkOffsets, chunkSize, signal: uploadAbort.signal,
-              onBytes: d => { uploadedBytes += d; render(); }
+              onBytes: d => { uploadedBytes += d; render(); },
+              onStatus: s => { speed.textContent = s; }
             });
 
             name.textContent = `Verifying ${file.name}`;
             queueEntry.state.textContent = "Verifying";
             speed.textContent = "Verifying chunks and final file checksum";
 
-            const completed = await fetch(`/api/transfers/${session.id}/complete`, {
-              method: "POST", headers, credentials: "same-origin", signal: uploadAbort.signal, body: JSON.stringify({})
+            let completed = await finishTransfer(session, headers, uploadAbort.signal, (verified, total) => {
+              speed.textContent = `Verifying ${formatBytes(verified)} of ${formatBytes(total)}`;
             });
 
-            if (!completed.ok) {
-              throw Object.assign(new Error(await responseError(completed)), { status: completed.status });
+            for (let pass = 0; completed.error === "chunks_corrupt" && pass < 3; pass++) {
+              showNotice(`Repairing ${completed.bad_offsets.length} damaged chunk(s)...`, "info");
+              await sendChunks({
+                session, file, offsets: completed.bad_offsets, chunkSize, signal: uploadAbort.signal,
+                onBytes: () => {}, onStatus: s => { speed.textContent = s; }
+              });
+              completed = await finishTransfer(session, headers, uploadAbort.signal);
+            }
+
+            if (completed.error) {
+              throw new Error("The laptop could not verify this file after re-sending damaged chunks.");
             }
 
             safeStorage.removeItem(resumeKey);
+            activeUpload = { id: null, resumeKey: null };
             queueEntry.state.textContent = "Completed";
             queueEntry.state.className = "upload-queue-state complete";
             queueEntry.progress.value = queueEntry.progress.max;
@@ -1120,24 +1320,21 @@ async function uploadFiles(files, retryName = null) {
   } finally {
     wakeLock?.release();
     if (cancelBtn) cancelBtn.classList.add("hidden");
+    uploadInProgress = false;
   }
 }
 
-const JUNK_FILE_RE = /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*|~\$.*|.*\.(tmp|crdownload|part))$/i;
+const JUNK_FILE_RE = /^(\.DS_Store|Thumbs\.db|desktop\.ini|\._.*|~\$.*|.*\.crdownload)$/i;
 
 function sanitizeUploadFiles(rawFiles) {
-  return Array.from(rawFiles || []).filter(file => {
-    const name = file.name || "";
-    const rel = file.webkitRelativePath || "";
-    if (JUNK_FILE_RE.test(name) || name.startsWith(".supershare-") || name.endsWith(".partial")) {
-      return false;
-    }
-    const parts = rel.replace(/\\/g, "/").split("/");
-    if (parts.some(p => JUNK_FILE_RE.test(p) || p.startsWith(".supershare-") || p.endsWith(".partial"))) {
-      return false;
-    }
-    return true;
-  });
+  const all = Array.from(rawFiles || []);
+  const kept = all.filter(file => !relPath(file).replace(/\\/g, "/").split("/")
+    .some(p => JUNK_FILE_RE.test(p) || p.startsWith(".supershare-") || p.endsWith(".partial")));
+  const dropped = all.length - kept.length;
+  if (dropped) {
+    showNotice(`${dropped} system or in-progress file(s) were skipped (.DS_Store, Thumbs.db, ~$ lock files, .crdownload).`, "info");
+  }
+  return kept;
 }
 
 document.getElementById("fileInput").onchange = event => {
@@ -1368,3 +1565,5 @@ switchTab = function(targetSectionId, updateHash = false) {
 setInterval(() => { if (!document.hidden && activeTabId === "storageMgrSection") refreshStorageInfo(); }, 25000);
 
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshDevices(); });
+
+refreshDevices().then(() => { if (pairingCodeFromQr && !window._profilePaired) pairThisDevice(); });
