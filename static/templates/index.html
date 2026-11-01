@@ -19,7 +19,9 @@
                 <polyline points="16 6 12 2 8 6"/>
                 <line x1="12" y1="2" x2="12" y2="15"/>
                 <circle cx="12" cy="15" r="1.5" fill="currentColor"/>
-              </svg>
+                    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
+    </svg>
             </span>
             SuperShare
           </h1>
@@ -124,8 +126,18 @@
       <p class="section-description">Browse the host’s shared folder. Select items to download them as one ZIP, or save a single file. The page shows progress when it can safely stream to a save location; otherwise your browser’s Downloads panel shows live progress.</p>
       <div class="breadcrumb" id="breadcrumbBar"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg> /</div>
       <div class="select-toolbar">
-        <label class="checkbox-label"><input type="checkbox" id="selectAllCheckbox"><span>Select All</span></label>
-        <span id="selectionSummary" class="selection-summary">0 selected</span>
+        <div class="select-toolbar-left">
+          <label class="checkbox-label"><input type="checkbox" id="selectAllCheckbox"><span>Select All</span></label>
+          <span id="selectionSummary" class="selection-summary">0 selected</span>
+        </div>
+        <div class="view-mode-toggle" role="group" aria-label="Folder display view mode">
+          <button id="viewGridBtn" type="button" class="btn-xs view-toggle-btn active" title="Grid / Tiles View" aria-pressed="true">
+            <svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg> Tiles
+          </button>
+          <button id="viewListBtn" type="button" class="btn-xs view-toggle-btn" title="List View" aria-pressed="false">
+            <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg> List
+          </button>
+        </div>
       </div>
       <ul id="downloadQueue" class="download-queue hidden" aria-label="Download progress"></ul>
       <ul class="file-list" id="fileList"><li class="empty-state">Loading...</li></ul>

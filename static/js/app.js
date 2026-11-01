@@ -1,3 +1,29 @@
+let fileViewMode = safeStorage.getItem("supershare-file-view-mode") || "grid";
+
+function setFileViewMode(mode) {
+  fileViewMode = mode;
+  safeStorage.setItem("supershare-file-view-mode", mode);
+  const list = document.getElementById("fileList");
+  const gridBtn = document.getElementById("viewGridBtn");
+  const listBtn = document.getElementById("viewListBtn");
+
+  if (list) list.classList.toggle("grid-view", mode === "grid");
+  if (gridBtn) {
+    gridBtn.classList.toggle("active", mode === "grid");
+    gridBtn.setAttribute("aria-pressed", mode === "grid" ? "true" : "false");
+  }
+  if (listBtn) {
+    listBtn.classList.toggle("active", mode === "list");
+    listBtn.setAttribute("aria-pressed", mode === "list" ? "true" : "false");
+  }
+  if (currentItems && currentItems.length) {
+    renderFileItems();
+  }
+}
+
+document.getElementById("viewGridBtn")?.addEventListener("click", () => setFileViewMode("grid"));
+document.getElementById("viewListBtn")?.addEventListener("click", () => setFileViewMode("list"));
+
 /* --- File Preview Handler --- */
 const PREVIEW_TYPES = {
   img: new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "avif"]),
@@ -974,8 +1000,251 @@ function updateSelectionUI() {
   selectAll.checked = currentItems.length > 0 && selectedCount === currentItems.length;
 }
 
+function renderFileItems() {
+  const list = document.getElementById("fileList");
+  list.replaceChildren();
+  list.classList.toggle("grid-view", fileViewMode === "grid");
+
+  if (currentPath) {
+    const parent = currentPath.split("/").slice(0, -1).join("/");
+    const li = document.createElement("li");
+    li.className = "file-item parent-nav-item";
+    if (fileViewMode === "grid") {
+      const thumb = document.createElement("div");
+      thumb.className = "tile-thumb-container";
+      const ph = document.createElement("div");
+      ph.className = "tile-icon-placeholder folder-icon";
+      ph.appendChild(icon("arrow-up"));
+      thumb.appendChild(ph);
+      thumb.onclick = () => fetchDirectory(parent);
+
+      const info = document.createElement("div");
+      info.className = "tile-info";
+      const name = document.createElement("a");
+      name.href = "#";
+      name.className = "tile-name";
+      name.textContent = ".. (Back to parent)";
+      name.onclick = e => { e.preventDefault(); fetchDirectory(parent); };
+      info.appendChild(name);
+      li.append(thumb, info);
+    } else {
+      const info = document.createElement("div");
+      info.className = "file-info";
+      const link = document.createElement("a");
+      link.href = "#";
+      link.className = "file-link";
+      link.append(icon("arrow-up"), document.createTextNode(" .. (Back to parent)"));
+      link.onclick = event => { event.preventDefault(); fetchDirectory(parent); };
+      info.appendChild(link);
+      li.appendChild(info);
+    }
+    list.appendChild(li);
+  }
+
+  if (!currentItems.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = "Folder is empty. Browse host folders above to choose a location.";
+    list.appendChild(empty);
+    updateSelectionUI();
+    return;
+  }
+
+  currentItems.forEach(item => {
+    const relPath = currentPath ? `${currentPath}/${item.name}` : item.name;
+    const encoded = encodeURIComponent(relPath);
+    const li = document.createElement("li");
+    li.className = "file-item";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.className = "item-checkbox";
+    checkbox.checked = selectedItems.has(relPath);
+    if (checkbox.checked) li.classList.add("selected");
+    checkbox.onchange = event => {
+      if (event.target.checked) {
+        selectedItems.set(relPath, item);
+        li.classList.add("selected");
+      } else {
+        selectedItems.delete(relPath);
+        li.classList.remove("selected");
+      }
+      updateSelectionUI();
+    };
+
+    const ext = getFileExtension(item.name);
+    const previewable = canPreviewFile(item.name);
+
+    if (fileViewMode === "grid") {
+      // --- TILE VIEW ---
+      const thumb = document.createElement("div");
+      thumb.className = "tile-thumb-container";
+
+      if (item.is_dir) {
+        const ph = document.createElement("div");
+        ph.className = "tile-icon-placeholder folder-icon";
+        ph.appendChild(icon("folder"));
+        thumb.appendChild(ph);
+        thumb.onclick = () => fetchDirectory(relPath);
+      } else if (PREVIEW_TYPES.img.has(ext)) {
+        const img = document.createElement("img");
+        img.className = "tile-thumb-img";
+        img.src = `/api/preview?path=${encoded}`;
+        img.alt = item.name;
+        img.loading = "lazy";
+        thumb.appendChild(img);
+        thumb.onclick = () => openFilePreview(relPath, item.name, item.size || 0);
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "tile-icon-placeholder";
+        const iconType = PREVIEW_TYPES.audio.has(ext) ? "music" : PREVIEW_TYPES.video.has(ext) ? "monitor" : PREVIEW_TYPES.pdf.has(ext) ? "files" : "file-plus";
+        ph.appendChild(icon(iconType));
+        thumb.appendChild(ph);
+        if (previewable) {
+          thumb.onclick = () => openFilePreview(relPath, item.name, item.size || 0);
+        } else {
+          thumb.onclick = () => triggerBrowserDownload(`/api/download?path=${encoded}`, item.name);
+        }
+      }
+
+      const badge = document.createElement("span");
+      badge.className = "tile-badge";
+      badge.textContent = item.is_dir ? "DIR" : (ext || "FILE");
+      thumb.appendChild(badge);
+
+      const info = document.createElement("div");
+      info.className = "tile-info";
+      const nameLink = document.createElement("a");
+      nameLink.href = item.is_dir ? "#" : `/api/download?path=${encoded}`;
+      nameLink.className = "tile-name";
+      nameLink.title = item.name;
+      nameLink.textContent = item.name;
+      if (item.is_dir) {
+        nameLink.onclick = e => { e.preventDefault(); fetchDirectory(relPath); };
+      } else if (previewable) {
+        nameLink.onclick = e => { e.preventDefault(); openFilePreview(relPath, item.name, item.size || 0); };
+      }
+      info.appendChild(nameLink);
+
+      const meta = document.createElement("div");
+      meta.className = "tile-meta";
+      meta.textContent = item.is_dir ? "Folder" : formatBytes(item.size);
+      info.appendChild(meta);
+
+      const actions = document.createElement("div");
+      actions.className = "tile-actions";
+
+      if (item.is_dir) {
+        const zipBtn = document.createElement("a");
+        zipBtn.href = `/api/zip?path=${encoded}`;
+        zipBtn.className = "dl-btn folder";
+        zipBtn.dataset.downloadName = `${item.name}.zip`;
+        zipBtn.append(icon("archive"), document.createTextNode(" ZIP"));
+        actions.appendChild(zipBtn);
+      } else {
+        if (previewable) {
+          const prevBtn = document.createElement("button");
+          prevBtn.type = "button";
+          prevBtn.className = "btn-preview";
+          prevBtn.append(icon("monitor"), document.createTextNode(" View"));
+          prevBtn.onclick = e => {
+            e.stopPropagation();
+            openFilePreview(relPath, item.name, item.size || 0);
+          };
+          actions.appendChild(prevBtn);
+        }
+        const saveBtn = document.createElement("a");
+        saveBtn.href = `/api/download?path=${encoded}`;
+        saveBtn.className = "dl-btn";
+        saveBtn.download = "";
+        saveBtn.dataset.downloadName = item.name;
+        saveBtn.dataset.downloadSize = String(item.size || 0);
+        saveBtn.append(icon("download"), document.createTextNode(" Save"));
+        actions.appendChild(saveBtn);
+      }
+
+      li.append(checkbox, thumb, info, actions);
+    } else {
+      // --- TRADITIONAL LIST VIEW ---
+      const left = document.createElement("div");
+      left.className = "item-left";
+      left.appendChild(checkbox);
+
+      const info = document.createElement("div");
+      info.className = "file-info";
+      const link = document.createElement("a");
+      link.className = "file-link";
+
+      if (item.is_dir) {
+        link.href = "#";
+        link.append(icon("folder"), document.createTextNode(` ${item.name}`));
+        link.onclick = event => { event.preventDefault(); fetchDirectory(relPath); };
+        const meta = document.createElement("div");
+        meta.className = "file-meta";
+        meta.textContent = "Folder · Open to view contents";
+        info.append(link, meta);
+        const button = document.createElement("a");
+        button.href = `/api/zip?path=${encoded}`;
+        button.className = "dl-btn folder";
+        button.dataset.downloadName = `${item.name}.zip`;
+        button.append(icon("archive"), document.createTextNode(" ZIP"));
+        left.appendChild(info);
+        li.append(left, button);
+      } else {
+        link.href = `/api/download?path=${encoded}`;
+        link.download = "";
+        link.dataset.downloadName = item.name;
+        link.dataset.downloadSize = String(item.size || 0);
+        link.append(icon("files"), document.createTextNode(` ${item.name}`));
+        const meta = document.createElement("div");
+        meta.className = "file-meta";
+        meta.textContent = formatBytes(item.size);
+        info.append(link, meta);
+
+        const actionGroup = document.createElement("div");
+        actionGroup.className = "file-actions-group";
+
+        if (previewable) {
+          const previewBtn = document.createElement("button");
+          previewBtn.type = "button";
+          previewBtn.className = "btn-preview";
+          previewBtn.append(icon("monitor"), document.createTextNode(" Preview"));
+          previewBtn.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openFilePreview(relPath, item.name, item.size || 0);
+          };
+          actionGroup.appendChild(previewBtn);
+          link.onclick = (e) => {
+            e.preventDefault();
+            openFilePreview(relPath, item.name, item.size || 0);
+          };
+        }
+
+        const button = document.createElement("a");
+        button.href = `/api/download?path=${encoded}`;
+        button.className = "dl-btn";
+        button.download = "";
+        button.dataset.downloadName = item.name;
+        button.dataset.downloadSize = String(item.size || 0);
+        button.append(icon("download"), document.createTextNode(" Save"));
+        actionGroup.appendChild(button);
+
+        left.appendChild(info);
+        li.append(left, actionGroup);
+      }
+    }
+
+    checkbox.setAttribute("aria-label", `Select ${item.name}`);
+    list.appendChild(li);
+  });
+
+  updateSelectionUI();
+}
+
 async function fetchDirectory(path = "") {
-  currentPath = path; selectedItems.clear();
+  currentPath = path;
+  selectedItems.clear();
   const breadcrumb = document.getElementById("breadcrumbBar");
   breadcrumb.replaceChildren(icon("home"), document.createTextNode(` Subpath: /${path}`));
   document.getElementById("zipCurrentBtn").href = "/api/zip?path=" + encodeURIComponent(path);
@@ -994,83 +1263,7 @@ async function fetchDirectory(path = "") {
     document.getElementById("hostRootText").textContent = "Pair and get approval to view the receive folder";
     document.getElementById("hostRootText").title = "";
   }
-  const list = document.getElementById("fileList"); list.replaceChildren();
-  if (path) {
-    const parent = path.split("/").slice(0, -1).join("/");
-    const li = document.createElement("li"); li.className = "file-item";
-    const info = document.createElement("div"); info.className = "file-info";
-    const link = document.createElement("a"); link.href = "#"; link.className = "file-link";
-    link.append(icon("arrow-up"), document.createTextNode(" .. (Back to parent)"));
-    link.onclick = event => { event.preventDefault(); fetchDirectory(parent); };
-    info.appendChild(link); li.appendChild(info); list.appendChild(li);
-  }
-  if (!currentItems.length) {
-    const empty = document.createElement("li"); empty.className = "empty-state";
-    empty.textContent = "Folder is empty. Browse host folders above to choose a location.";
-    list.appendChild(empty); updateSelectionUI(); return;
-  }
-  currentItems.forEach(item => {
-    const relPath = path ? `${path}/${item.name}` : item.name;
-    const encoded = encodeURIComponent(relPath);
-    const li = document.createElement("li"); li.className = "file-item";
-    const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.className = "item-checkbox";
-    checkbox.onchange = event => {
-      if (event.target.checked) { selectedItems.set(relPath, item); li.classList.add("selected"); }
-      else { selectedItems.delete(relPath); li.classList.remove("selected"); }
-      updateSelectionUI();
-    };
-    const left = document.createElement("div"); left.className = "item-left"; left.appendChild(checkbox);
-    const info = document.createElement("div"); info.className = "file-info";
-    const link = document.createElement("a"); link.className = "file-link";
-    if (item.is_dir) {
-      link.href = "#"; link.append(icon("folder"), document.createTextNode(` ${item.name}`));
-      link.onclick = event => { event.preventDefault(); fetchDirectory(relPath); };
-      const meta = document.createElement("div"); meta.className = "file-meta"; meta.textContent = "Folder · Open to view contents"; info.append(link, meta);
-      const button = document.createElement("a"); button.href = `/api/zip?path=${encoded}`; button.className = "dl-btn folder";
-      button.dataset.downloadName = `${item.name}.zip`;
-      button.append(icon("archive"), document.createTextNode(" ZIP")); left.appendChild(info); li.append(left, button);
-    } else {
-      link.href = `/api/download?path=${encoded}`; link.download = "";
-      link.dataset.downloadName = item.name; link.dataset.downloadSize = String(item.size || 0);
-      link.append(icon("files"), document.createTextNode(` ${item.name}`));
-      const meta = document.createElement("div"); meta.className = "file-meta"; meta.textContent = formatBytes(item.size); info.append(link, meta);
-
-      const actionGroup = document.createElement("div");
-      actionGroup.className = "file-actions-group";
-
-      if (canPreviewFile(item.name)) {
-        const previewBtn = document.createElement("button");
-        previewBtn.type = "button";
-        previewBtn.className = "btn-preview";
-        previewBtn.append(icon("monitor"), document.createTextNode(" Preview"));
-        previewBtn.onclick = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          openFilePreview(relPath, item.name, item.size || 0);
-        };
-        actionGroup.appendChild(previewBtn);
-        // Also clicking link can preview if user wants
-        link.onclick = (e) => {
-          e.preventDefault();
-          openFilePreview(relPath, item.name, item.size || 0);
-        };
-      }
-
-      const button = document.createElement("a");
-      button.href = `/api/download?path=${encoded}`;
-      button.className = "dl-btn";
-      button.download = "";
-      button.dataset.downloadName = item.name;
-      button.dataset.downloadSize = String(item.size || 0);
-      button.append(icon("download"), document.createTextNode(" Save"));
-      actionGroup.appendChild(button);
-
-      left.appendChild(info);
-      li.append(left, actionGroup);
-    }
-    checkbox.setAttribute("aria-label", `Select ${item.name}`); list.appendChild(li);
-  });
-  updateSelectionUI();
+  renderFileItems();
 }
 
 const MAX_IN_PAGE_DOWNLOAD_BYTES = 48 * 1024 * 1024;
@@ -1711,3 +1904,5 @@ setInterval(() => { if (!document.hidden && activeTabId === "storageMgrSection")
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshDevices(); });
 
 refreshDevices().then(() => { if (pairingCodeFromQr && !window._profilePaired) pairThisDevice(); });
+
+setFileViewMode(fileViewMode);
