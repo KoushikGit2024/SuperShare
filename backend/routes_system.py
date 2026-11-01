@@ -1,6 +1,7 @@
 """
 routes_system.py — Network status, diagnostics, storage maintenance, speedtest, and state resets.
 """
+
 import asyncio
 import os
 import shutil
@@ -9,13 +10,23 @@ import time
 from aiohttp import web
 
 from .config import (
-    STATE, CHUNK_SIZE, ACTIVE_SLOT_STATES, STALE_TRANSFER_SECONDS,
-    save_persistent_state, request_save,
+    STATE,
+    CHUNK_SIZE,
+    ACTIVE_SLOT_STATES,
+    STALE_TRANSFER_SECONDS,
+    save_persistent_state,
+    request_save,
 )
 from .routes_common import *
 from .routes_common import (
-    STALE_PARTIAL_SECONDS, _require_host_dashboard, _require_share_access,
-    _authorize_transfer_write, _host_interfaces, _host_addresses, _connection_kind, _request_ip,
+    STALE_PARTIAL_SECONDS,
+    _require_host_dashboard,
+    _require_share_access,
+    _authorize_transfer_write,
+    _host_interfaces,
+    _host_addresses,
+    _connection_kind,
+    _request_ip,
 )
 
 _SPEEDTEST_BLOCK = bytes(1024 * 1024)
@@ -25,7 +36,13 @@ _storage_cache = {"root": None, "at": 0.0, "scan": (0, 0, 0, 0, 0, 0)}
 def _is_port_80_proxy_active() -> bool:
     try:
         import subprocess
-        proc = subprocess.run(["netsh", "interface", "portproxy", "show", "v4tov4"], capture_output=True, text=True, check=False)
+
+        proc = subprocess.run(
+            ["netsh", "interface", "portproxy", "show", "v4tov4"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         for line in proc.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 4 and "80" in parts:
@@ -44,21 +61,28 @@ async def network_handler(request: web.Request) -> web.Response:
         scheme = request.scheme
         has_proxy = _is_port_80_proxy_active() if port != 80 else True
         port_part = "" if (port in (80, 443) or has_proxy) else f":{port}"
-        connection = {"name": selected["name"], "kind": selected.get("kind", "Local network"),
-                      "address": selected["address"], "url": f"{scheme}://{selected['address']}{port_part}/"}
-    return web.json_response({
-        "service": "SuperShare",
-        "protocol_version": 1,
-        "port": request.url.port or 80,
-        "scheme": request.scheme,
-        "ca_fingerprint": request.app.get("tls_info", {}).get("ca_fingerprint"),
-        "addresses": [connection["address"]] if connection else [],
-        "interfaces": interfaces,
-        "connection": connection,
-        "connection_path": "/",
-        "pairing_required": False,
-        "internet_required": False,
-    })
+        connection = {
+            "name": selected["name"],
+            "kind": selected.get("kind", "Local network"),
+            "address": selected["address"],
+            "url": f"{scheme}://{selected['address']}{port_part}/",
+        }
+    return web.json_response(
+        {
+            "service": "SuperShare",
+            "protocol_version": 1,
+            "port": request.url.port or 80,
+            "scheme": request.scheme,
+            "ca_fingerprint": request.app.get("tls_info", {}).get("ca_fingerprint"),
+            "addresses": [connection["address"]] if connection else [],
+            "interfaces": interfaces,
+            "connection": connection,
+            "connection_path": "/",
+            "pairing_required": False,
+            "internet_required": False,
+        }
+    )
+
 
 async def diagnostics_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
@@ -66,16 +90,35 @@ async def diagnostics_handler(request: web.Request) -> web.Response:
     try:
         usage = shutil.disk_usage(root)
         with STATE["lock"]:
-            active_jobs = [job for job in STATE.get("transfer_jobs", {}).values()
-                           if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}]
-            reserved_bytes = sum(max(0, job.get("size", 0) - job.get("offset", 0)) for job in active_jobs)
-        storage = {"available_bytes": usage.free, "reserved_bytes": reserved_bytes,
-                   "active_transfer_count": len(active_jobs), "total_bytes": usage.total}
+            active_jobs = [
+                job
+                for job in STATE.get("transfer_jobs", {}).values()
+                if job.get("status") in {"queued", "transferring", "interrupted", "verifying"}
+            ]
+            reserved_bytes = sum(
+                max(0, job.get("size", 0) - job.get("offset", 0)) for job in active_jobs
+            )
+        storage = {
+            "available_bytes": usage.free,
+            "reserved_bytes": reserved_bytes,
+            "active_transfer_count": len(active_jobs),
+            "total_bytes": usage.total,
+        }
     except OSError as exc:
         storage = {"error": str(exc)}
-    return web.json_response({"service": "online", "protocol_version": 1, "port": request.url.port or 80,
-                              "addresses": _host_addresses(), "interfaces": _host_interfaces(), "receive_root": root, "storage": storage,
-                              "pairing_code_rotates_on_restart": True})
+    return web.json_response(
+        {
+            "service": "online",
+            "protocol_version": 1,
+            "port": request.url.port or 80,
+            "addresses": _host_addresses(),
+            "interfaces": _host_interfaces(),
+            "receive_root": root,
+            "storage": storage,
+            "pairing_code_rotates_on_restart": True,
+        }
+    )
+
 
 def _scan_share(root):
     shared_bytes = shared_count = part_bytes = part_count = stale_bytes = stale_count = 0
@@ -100,6 +143,7 @@ def _scan_share(root):
 
 _storage_cache = {"root": None, "at": 0.0, "scan": (0, 0, 0, 0, 0, 0)}
 
+
 async def storage_info_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     root = STATE["share_dir"]
@@ -114,23 +158,38 @@ async def storage_info_handler(request: web.Request) -> web.Response:
     sb, sc, pb, pc, stale_b, stale_c = _storage_cache["scan"]
     with STATE["lock"]:
         devices_count, transfers_count = len(STATE["devices"]), len(STATE["transfers"])
-    return web.json_response({
-        "share_dir": root, "disk_total": total, "disk_free": free, "disk_used": used,
-        "shared_files_bytes": sb, "shared_files_count": sc, "partial_bytes": pb, "partial_count": pc,
-        "stale_partial_bytes": stale_b, "stale_partial_count": stale_c, "stale_after_hours": 24,
-        "low_space": bool(total) and free < max(1 << 30, int(total * 0.05)),
-        "devices_count": devices_count, "transfers_count": transfers_count
-    })
+    return web.json_response(
+        {
+            "share_dir": root,
+            "disk_total": total,
+            "disk_free": free,
+            "disk_used": used,
+            "shared_files_bytes": sb,
+            "shared_files_count": sc,
+            "partial_bytes": pb,
+            "partial_count": pc,
+            "stale_partial_bytes": stale_b,
+            "stale_partial_count": stale_c,
+            "stale_after_hours": 24,
+            "low_space": bool(total) and free < max(1 << 30, int(total * 0.05)),
+            "devices_count": devices_count,
+            "transfers_count": transfers_count,
+        }
+    )
+
 
 async def clear_history_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     from .config import clear_transfers_history
+
     clear_transfers_history()
     return web.json_response({"status": "ok", "message": "Transfer history cleared"})
+
 
 async def clear_partials_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     from .config import clear_temp_partials
+
     body = {}
     if request.can_read_body:
         try:
@@ -143,11 +202,15 @@ async def clear_partials_handler(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text="older_than_hours must be a number")
     res = await asyncio.to_thread(clear_temp_partials, max(0, hours) * 3600)
     _storage_cache["at"] = 0.0
-    return web.json_response({"status": "ok", "removed": res["removed"], "reclaimed_bytes": res["reclaimed_bytes"]})
+    return web.json_response(
+        {"status": "ok", "removed": res["removed"], "reclaimed_bytes": res["reclaimed_bytes"]}
+    )
+
 
 async def reset_state_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     from .config import reset_all_stored_state
+
     try:
         reset_all_stored_state()
     except RuntimeError as exc:
@@ -157,22 +220,26 @@ async def reset_state_handler(request: web.Request) -> web.Response:
 
 _SPEEDTEST_BLOCK = bytes(1024 * 1024)
 
+
 async def speedtest_down_handler(request: web.Request) -> web.StreamResponse:
     _require_share_access(request, "read")
     try:
         mb = max(1, min(512, int(request.query.get("mb", "64"))))
     except ValueError:
         raise web.HTTPBadRequest(text="mb must be an integer")
-    resp = web.StreamResponse(headers={
-        "Content-Type": "application/octet-stream",
-        "Content-Length": str(mb * 1024 * 1024),
-        "Cache-Control": "no-store",
-    })
+    resp = web.StreamResponse(
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(mb * 1024 * 1024),
+            "Cache-Control": "no-store",
+        }
+    )
     await resp.prepare(request)
     for _ in range(mb):
         await resp.write(_SPEEDTEST_BLOCK)
     await resp.write_eof()
     return resp
+
 
 async def speedtest_up_handler(request: web.Request) -> web.Response:
     _authorize_transfer_write(request)
@@ -183,4 +250,6 @@ async def speedtest_up_handler(request: web.Request) -> web.Response:
         received += len(piece)
         if received > limit:
             raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=received)
-    return web.json_response({"bytes": received, "server_seconds": round(time.perf_counter() - started, 3)})
+    return web.json_response(
+        {"bytes": received, "server_seconds": round(time.perf_counter() - started, 3)}
+    )

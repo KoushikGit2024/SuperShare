@@ -1,4 +1,3 @@
-
 import sys
 import os
 import time
@@ -12,6 +11,7 @@ from pathlib import Path
 
 RELOAD = threading.Event()
 
+
 def start_reloader_watcher():
     """Background thread watching python and frontend files; auto-restarts server on changes."""
     watch_dirs = [
@@ -19,7 +19,7 @@ def start_reloader_watcher():
         PROJECT_ROOT / "static",
         PROJECT_ROOT / "run.py",
     ]
-    
+
     def get_mtimes():
         mtimes = {}
         for item in watch_dirs:
@@ -48,7 +48,9 @@ def start_reloader_watcher():
             current_mtimes = get_mtimes()
             for path, mtime in current_mtimes.items():
                 if path in initial_mtimes and mtime > initial_mtimes[path] + 0.1:
-                    print(f"\n[RELOAD] Detected change in {os.path.basename(path)}. Reloading server...")
+                    print(
+                        f"\n[RELOAD] Detected change in {os.path.basename(path)}. Reloading server..."
+                    )
                     RELOAD.set()
                     _thread.interrupt_main()
                     return
@@ -64,6 +66,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 if sys.platform == "win32" and os.environ.get("SUPERSHARE_SELECTOR_LOOP") == "1":
     import asyncio
+
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from aiohttp import web
@@ -83,7 +86,12 @@ def is_port_in_use(port):
 
 def get_port_process(port):
     try:
-        result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         for line in result.stdout.splitlines():
             if f":{port}" in line and "LISTENING" in line:
                 parts = line.split()
@@ -96,7 +104,9 @@ def get_port_process(port):
 
 def copy_to_clipboard(text):
     try:
-        subprocess.run(["clip"], input=text, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.run(
+            ["clip"], input=text, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW
+        )
         return True
     except Exception:
         return False
@@ -113,6 +123,7 @@ def configure_hotspot_firewall_rule(port: int) -> int:
 
     try:
         import ctypes
+
         is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         is_admin = False
@@ -183,7 +194,12 @@ def is_port_80_proxy_active(target_port: int) -> bool:
     if sys.platform != "win32":
         return False
     try:
-        res = subprocess.run(["netsh", "interface", "portproxy", "show", "v4tov4"], capture_output=True, text=True, check=False)
+        res = subprocess.run(
+            ["netsh", "interface", "portproxy", "show", "v4tov4"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         for line in res.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 4 and "80" in parts and str(target_port) in parts:
@@ -209,7 +225,7 @@ def local_subnet_firewall_rule_exists(port: int) -> bool:
             creationflags=subprocess.CREATE_NO_WINDOW,
             check=False,
         )
-        has_firewall = (result.returncode == 0)
+        has_firewall = result.returncode == 0
         has_proxy = is_port_80_proxy_active(port) if port != 80 else True
         return has_firewall and has_proxy
     except OSError:
@@ -221,13 +237,18 @@ def ensure_hotspot_firewall_rule(port: int) -> bool:
     try:
         import ctypes
         from ctypes import wintypes
+
         is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
-        print("[WARNING] Could not check Windows administrator status; firewall rule was not changed.")
+        print(
+            "[WARNING] Could not check Windows administrator status; firewall rule was not changed."
+        )
         return False
 
     if local_subnet_firewall_rule_exists(port):
-        print(f"[OK] Network profile and local-subnet TCP {port} firewall rule are already configured.")
+        print(
+            f"[OK] Network profile and local-subnet TCP {port} firewall rule are already configured."
+        )
         return True
 
     if is_admin:
@@ -268,12 +289,16 @@ def ensure_hotspot_firewall_rule(port: int) -> bool:
     if not shell32.ShellExecuteExW(ctypes.byref(info)):
         error = ctypes.windll.kernel32.GetLastError()
         if error == 1223:
-            print("[WARNING] Windows Firewall setup was cancelled. Phone access may be blocked on Public networks.")
+            print(
+                "[WARNING] Windows Firewall setup was cancelled. Phone access may be blocked on Public networks."
+            )
         else:
             print(f"[WARNING] Could not request firewall setup (Windows error {error}).")
         return False
 
-    print("[INFO] Waiting for approval to set the network profile to Private and allow local-subnet TCP...")
+    print(
+        "[INFO] Waiting for approval to set the network profile to Private and allow local-subnet TCP..."
+    )
     kernel32 = ctypes.windll.kernel32
     kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     kernel32.WaitForSingleObject.restype = wintypes.DWORD
@@ -283,10 +308,15 @@ def ensure_hotspot_firewall_rule(port: int) -> bool:
     kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.WaitForSingleObject(info.hProcess, 0xFFFFFFFF)
     exit_code = wintypes.DWORD()
-    succeeded = bool(kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code))) and exit_code.value == 0
+    succeeded = (
+        bool(kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code)))
+        and exit_code.value == 0
+    )
     kernel32.CloseHandle(info.hProcess)
     if succeeded:
-        print(f"[OK] Private network profile and local-subnet TCP {port} firewall rule are configured.")
+        print(
+            f"[OK] Private network profile and local-subnet TCP {port} firewall rule are configured."
+        )
     else:
         print("[WARNING] Windows network/firewall setup failed. Phone access may be blocked.")
     return succeeded
@@ -304,12 +334,12 @@ def pick_folder_gui(initial_dir: str) -> str:
     try:
         import tkinter as tk
         from tkinter import filedialog
+
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
         selected = filedialog.askdirectory(
-            initialdir=initial_dir,
-            title="SuperShare - Select Any Folder or Drive to Share"
+            initialdir=initial_dir, title="SuperShare - Select Any Folder or Drive to Share"
         )
         root.destroy()
         return selected if selected else initial_dir
@@ -322,7 +352,11 @@ def main():
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--gui", action="store_true")
-    parser.add_argument("--https", action="store_true", help="Enable local TLS; trust the printed local CA in browser clients")
+    parser.add_argument(
+        "--https",
+        action="store_true",
+        help="Enable local TLS; trust the printed local CA in browser clients",
+    )
     parser.add_argument("--reload", action="store_true", help="Dev only: restart on file changes")
     parser.add_argument("--_install-firewall-helper", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -337,11 +371,14 @@ def main():
     tls_info = None
     if args.https:
         from backend.tls_config import create_tls_context
+
         try:
             tls_context, tls_info = create_tls_context()
         except Exception as exc:
             print(f"[ERROR] Could not create local TLS certificates: {exc}")
-            print("[INFO] Install project requirements and retry, or use HTTP only on a trusted private hotspot.")
+            print(
+                "[INFO] Install project requirements and retry, or use HTTP only on a trusted private hotspot."
+            )
             return 1
 
     print_header()
@@ -396,7 +433,10 @@ def main():
 
     print(f"[SERVER] Shared Folder : {STATE['share_dir']}")
     print(f"[SERVER] Host          : {HOST}")
-    print(f"[SERVER] Port          : {active_port}" + (" (port 80 proxy active)" if proxy_active and active_port != 80 else ""))
+    print(
+        f"[SERVER] Port          : {active_port}"
+        + (" (port 80 proxy active)" if proxy_active and active_port != 80 else "")
+    )
     print()
 
     print("[PC] Dashboard:")
@@ -411,11 +451,19 @@ def main():
 
         interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
-            url = f"{scheme}://{ip}/" if (active_port == 80 or proxy_active) else f"{scheme}://{ip}:{active_port}/"
+            url = (
+                f"{scheme}://{ip}/"
+                if (active_port == 80 or proxy_active)
+                else f"{scheme}://{ip}:{active_port}/"
+            )
             print(f"     {interface_names.get(ip, 'Network adapter')}: {url}")
 
         primary_ip = local_ips[0]
-        phone_url = f"{scheme}://{primary_ip}/" if (active_port == 80 or proxy_active) else f"{scheme}://{primary_ip}:{active_port}/"
+        phone_url = (
+            f"{scheme}://{primary_ip}/"
+            if (active_port == 80 or proxy_active)
+            else f"{scheme}://{primary_ip}:{active_port}/"
+        )
 
         print()
 
@@ -427,7 +475,9 @@ def main():
     else:
         print("[WARNING] Could not detect a LAN IP.")
         print("[INFO] Phone connection may require manual configuration.")
-        print("[INFO] If Windows Firewall blocks access, allow SuperShare on the private hotspot network.")
+        print(
+            "[INFO] If Windows Firewall blocks access, allow SuperShare on the private hotspot network."
+        )
 
     print()
     print("=" * 68)
@@ -441,7 +491,11 @@ def main():
     print()
 
     try:
-        open_url = f"{scheme}://localhost/" if (active_port == 80 or proxy_active) else f"{scheme}://localhost:{active_port}/"
+        open_url = (
+            f"{scheme}://localhost/"
+            if (active_port == 80 or proxy_active)
+            else f"{scheme}://localhost:{active_port}/"
+        )
         threading.Timer(1.2, webbrowser.open, [open_url]).start()
 
         if args.reload:
@@ -451,7 +505,7 @@ def main():
             host=HOST,
             port=active_port,
             ssl_context=tls_context,
-            print=None
+            print=None,
         )
 
     except KeyboardInterrupt:

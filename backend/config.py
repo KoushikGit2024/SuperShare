@@ -1,6 +1,7 @@
 """
 config.py — Central configuration for SuperShare.
 """
+
 from pathlib import Path
 import os
 import json
@@ -11,12 +12,17 @@ import secrets
 import sys
 import shutil
 from contextlib import closing
+
 BACKEND_DIR = Path(__file__).resolve().parent
 BASE_DIR = BACKEND_DIR.parent
 FROZEN_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
 STATIC_DIR = FROZEN_DIR / "static"
 TEMPLATE_DIR = STATIC_DIR / "templates"
-DATA_DIR = (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "SuperShare") if getattr(sys, "frozen", False) else BASE_DIR
+DATA_DIR = (
+    (Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "SuperShare")
+    if getattr(sys, "frozen", False)
+    else BASE_DIR
+)
 SHARE_DIR = DATA_DIR / "shared_files"
 
 os.makedirs(SHARE_DIR, exist_ok=True)
@@ -60,10 +66,18 @@ def _connect_database():
     connection = sqlite3.connect(DATABASE_FILE, timeout=10)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
-    connection.execute("CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, data TEXT NOT NULL)")
-    connection.execute("CREATE TABLE IF NOT EXISTS transfers (id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL, data TEXT NOT NULL)")
-    connection.execute("CREATE TABLE IF NOT EXISTS transfer_jobs (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, data TEXT NOT NULL)")
-    connection.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, data TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS transfers (id TEXT PRIMARY KEY, timestamp INTEGER NOT NULL, data TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS transfer_jobs (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, data TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
     return connection
 
 
@@ -84,7 +98,9 @@ def _remove_managed_partial(job):
     base_real = os.path.realpath(share_root)
     part_real = os.path.realpath(part_path)
     try:
-        if os.path.normcase(os.path.commonpath([base_real, part_real])) != os.path.normcase(base_real):
+        if os.path.normcase(os.path.commonpath([base_real, part_real])) != os.path.normcase(
+            base_real
+        ):
             return False
     except ValueError:
         return False
@@ -104,7 +120,9 @@ def load_persistent_state():
             STATE["share_dir"] = os.path.abspath(row[0])
         rows = connection.execute("SELECT id, data FROM devices").fetchall()
         STATE["devices"].update({device_id: json.loads(data) for device_id, data in rows})
-        rows = connection.execute("SELECT data FROM transfers ORDER BY timestamp DESC LIMIT 200").fetchall()
+        rows = connection.execute(
+            "SELECT data FROM transfers ORDER BY timestamp DESC LIMIT 200"
+        ).fetchall()
         STATE["transfers"].extend(json.loads(row[0]) for row in reversed(rows))
         jobs = connection.execute("SELECT id, data FROM transfer_jobs").fetchall()
         STATE["transfer_jobs"] = {job_id: json.loads(data) for job_id, data in jobs}
@@ -123,10 +141,15 @@ def load_persistent_state():
             STATE["transfer_jobs"].pop(job_id, None)
         connection.executemany(
             "INSERT INTO transfer_jobs(id, updated_at, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
-            [(job_id, int(job.get("updated_at", time.time())), _state_json(job)) for job_id, job in STATE["transfer_jobs"].items()],
+            [
+                (job_id, int(job.get("updated_at", time.time())), _state_json(job))
+                for job_id, job in STATE["transfer_jobs"].items()
+            ],
         )
         if expired:
-            connection.executemany("DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired])
+            connection.executemany(
+                "DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired]
+            )
         if rows or STATE["devices"] or STATE["transfer_jobs"]:
             return
         try:
@@ -146,7 +169,10 @@ def save_persistent_state():
     with STATE["lock"]:
         devices = [(k, _state_json(v)) for k, v in STATE["devices"].items()]
         transfers = [(e["id"], e["timestamp"], _state_json(e)) for e in STATE["transfers"][-200:]]
-        jobs = [(k, int(j.get("updated_at", time.time())), _state_json(j)) for k, j in STATE.get("transfer_jobs", {}).items()]
+        jobs = [
+            (k, int(j.get("updated_at", time.time())), _state_json(j))
+            for k, j in STATE.get("transfer_jobs", {}).items()
+        ]
         share_dir = STATE["share_dir"]
 
     with _db_write_lock, closing(_connect_database()) as connection, connection:
@@ -156,7 +182,9 @@ def save_persistent_state():
         )
         if devices:
             placeholders = ",".join("?" for _ in devices)
-            connection.execute(f"DELETE FROM devices WHERE id NOT IN ({placeholders})", [d[0] for d in devices])
+            connection.execute(
+                f"DELETE FROM devices WHERE id NOT IN ({placeholders})", [d[0] for d in devices]
+            )
         else:
             connection.execute("DELETE FROM devices")
 
@@ -164,7 +192,9 @@ def save_persistent_state():
             "INSERT INTO transfers(id, timestamp, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET timestamp=excluded.timestamp, data=excluded.data",
             transfers,
         )
-        connection.execute("DELETE FROM transfers WHERE id NOT IN (SELECT id FROM transfers ORDER BY timestamp DESC LIMIT 200)")
+        connection.execute(
+            "DELETE FROM transfers WHERE id NOT IN (SELECT id FROM transfers ORDER BY timestamp DESC LIMIT 200)"
+        )
 
         connection.executemany(
             "INSERT INTO transfer_jobs(id, updated_at, data) VALUES(?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, data=excluded.data",
@@ -172,7 +202,9 @@ def save_persistent_state():
         )
         if jobs:
             placeholders = ",".join("?" for _ in jobs)
-            connection.execute(f"DELETE FROM transfer_jobs WHERE id NOT IN ({placeholders})", [j[0] for j in jobs])
+            connection.execute(
+                f"DELETE FROM transfer_jobs WHERE id NOT IN ({placeholders})", [j[0] for j in jobs]
+            )
         else:
             connection.execute("DELETE FROM transfer_jobs")
 
@@ -214,14 +246,18 @@ def cleanup_expired_transfer_jobs(now=None):
             STATE["transfer_jobs"].pop(job_id, None)
         if expired:
             with _db_write_lock, closing(_connect_database()) as connection, connection:
-                connection.executemany("DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired])
+                connection.executemany(
+                    "DELETE FROM transfer_jobs WHERE id=?", [(job_id,) for job_id in expired]
+                )
     return len(expired)
 
 
 load_persistent_state()
 
 
-def record_transfer(device_id, filename, size, status="completed", detail="", destination=None, direction="receive"):
+def record_transfer(
+    device_id, filename, size, status="completed", detail="", destination=None, direction="receive"
+):
     entry = {
         "id": f"{int(time.time() * 1000)}-{os.urandom(3).hex()}",
         "device_id": device_id,
@@ -254,7 +290,11 @@ def clear_temp_partials(min_age_seconds=0):
     with STATE["lock"]:
         share_dir = STATE["share_dir"]
         jobs = list(STATE.get("transfer_jobs", {}).values())
-        live = {os.path.realpath(j.get("part_path", "")) for j in jobs if j.get("status") in ACTIVE_SLOT_STATES}
+        live = {
+            os.path.realpath(j.get("part_path", ""))
+            for j in jobs
+            if j.get("status") in ACTIVE_SLOT_STATES
+        }
         by_part = {os.path.realpath(j["part_path"]): j for j in jobs if j.get("part_path")}
     removed = reclaimed = 0
     for root, _, files in os.walk(share_dir):
@@ -286,7 +326,11 @@ def clear_temp_partials(min_age_seconds=0):
 
 def reset_all_stored_state():
     with STATE["lock"]:
-        active = [j for j in STATE.get("transfer_jobs", {}).values() if j.get("status") in ACTIVE_SLOT_STATES]
+        active = [
+            j
+            for j in STATE.get("transfer_jobs", {}).values()
+            if j.get("status") in ACTIVE_SLOT_STATES
+        ]
         if active:
             raise RuntimeError("Cannot reset state while transfers are actively in progress")
         STATE["devices"].clear()

@@ -1,4 +1,11 @@
-_WIN_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+_WIN_RESERVED = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
 _BAD_CHARS = set('<>:"|?*')
 JUNK_NAMES = {".ds_store", "thumbs.db", "desktop.ini"}
 
@@ -10,7 +17,9 @@ def sanitize_relative_path(rel: str) -> str:
             continue
         if part == "..":
             raise PermissionError("Parent-directory segments are not allowed")
-        part = "".join("_" if c in _BAD_CHARS or ord(c) < 32 else c for c in part).rstrip(" .") or "_"
+        part = (
+            "".join("_" if c in _BAD_CHARS or ord(c) < 32 else c for c in part).rstrip(" .") or "_"
+        )
         if part.split(".")[0].lower() in _WIN_RESERVED:
             part = "_" + part
         if part.lower().startswith(".supershare-") or part.lower().startswith(".temp_"):
@@ -19,6 +28,7 @@ def sanitize_relative_path(rel: str) -> str:
     if not parts:
         raise ValueError("Empty path")
     return "/".join(parts)
+
 
 """
 file_manager.py — Safe path resolution, direct drive/folder browsing, and ZIP64 creation.
@@ -56,10 +66,7 @@ def list_host_folders(dir_path: str) -> dict:
     try:
         for entry in sorted(os.scandir(abs_path), key=lambda e: e.name.lower()):
             if entry.is_dir():
-                folders.append({
-                    "name": entry.name,
-                    "path": os.path.abspath(entry.path)
-                })
+                folders.append({"name": entry.name, "path": os.path.abspath(entry.path)})
     except PermissionError:
         pass
 
@@ -67,7 +74,7 @@ def list_host_folders(dir_path: str) -> dict:
         "current": abs_path,
         "parent": parent_path,
         "drives": get_system_drives(),
-        "folders": folders
+        "folders": folders,
     }
 
 
@@ -75,13 +82,19 @@ def safe_join(base_dir: str, rel_path: str) -> str:
     # Callers must decode transport encoding exactly once before reaching here.
     # Reject rooted paths and traversal rather than silently trimming them.
     cleaned = (rel_path or "").replace("\\", "/")
-    if ("\x00" in cleaned or cleaned.startswith("/") or ntpath.splitdrive(cleaned)[0]
-            or any(":" in part for part in cleaned.split("/"))):
+    if (
+        "\x00" in cleaned
+        or cleaned.startswith("/")
+        or ntpath.splitdrive(cleaned)[0]
+        or any(":" in part for part in cleaned.split("/"))
+    ):
         raise PermissionError("Access outside shared directory prohibited")
     base_real = os.path.realpath(os.path.abspath(base_dir))
     full_real = os.path.realpath(os.path.abspath(os.path.join(base_real, cleaned)))
     try:
-        if os.path.normcase(os.path.commonpath([base_real, full_real])) != os.path.normcase(base_real):
+        if os.path.normcase(os.path.commonpath([base_real, full_real])) != os.path.normcase(
+            base_real
+        ):
             raise PermissionError("Access outside shared directory prohibited")
     except ValueError as exc:
         raise PermissionError("Access outside shared directory prohibited") from exc
@@ -105,12 +118,14 @@ def list_directory(base_dir: str, rel_path: str) -> list:
             continue
         try:
             stat = entry.stat()
-            items.append({
-                "name": entry.name,
-                "is_dir": entry.is_dir(),
-                "size": stat.st_size if not entry.is_dir() else 0,
-                "mtime": int(stat.st_mtime)
-            })
+            items.append(
+                {
+                    "name": entry.name,
+                    "is_dir": entry.is_dir(),
+                    "size": stat.st_size if not entry.is_dir() else 0,
+                    "mtime": int(stat.st_mtime),
+                }
+            )
         except Exception:
             continue
     return items
@@ -154,7 +169,10 @@ def build_multi_selection_zip(base_dir: str, rel_paths: list) -> tuple:
                         if os.path.abspath(full_f) == os.path.abspath(tmp_zip_path):
                             continue
                         try:
-                            zf.write(full_f, os.path.join(base_item_name, os.path.relpath(full_f, target)))
+                            zf.write(
+                                full_f,
+                                os.path.join(base_item_name, os.path.relpath(full_f, target)),
+                            )
                         except Exception:
                             continue
     return tmp_zip_path, f"supershare_selected_{len(rel_paths)}.zip"

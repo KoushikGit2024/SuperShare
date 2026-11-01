@@ -2,6 +2,7 @@
 server.py — SuperShare aiohttp server entry point.
 Mirrors NER_RMCH/backend/server.py with the Windows Proactor fix and aiohttp router.
 """
+
 import platform
 import socket
 import asyncio
@@ -12,7 +13,15 @@ import aiohttp
 from aiohttp import web
 
 import time
-from .config import HOST, PORT, STATIC_DIR, TEMPLATE_DIR, STATE, request_save, cleanup_expired_transfer_jobs
+from .config import (
+    HOST,
+    PORT,
+    STATIC_DIR,
+    TEMPLATE_DIR,
+    STATE,
+    request_save,
+    cleanup_expired_transfer_jobs,
+)
 from .api_routes import (
     status_handler,
     upload_permission_handler,
@@ -78,7 +87,7 @@ async def index_handler(request: web.Request) -> web.Response:
     index_file = TEMPLATE_DIR / "index.html"
     if not index_file.is_file():
         raise web.HTTPNotFound(text="Template index.html not found")
-    
+
     html = index_file.read_text(encoding="utf-8")
     partials_dir = TEMPLATE_DIR / "partials"
 
@@ -98,9 +107,15 @@ async def _discovery_broadcaster(app):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
         while True:
-            payload = json.dumps({"service": "SuperShare", "protocol_version": 1, "port": app["port"],
-                                  "scheme": app["scheme"],
-                                  "ca_fingerprint": app["tls_info"].get("ca_fingerprint")}).encode("utf-8")
+            payload = json.dumps(
+                {
+                    "service": "SuperShare",
+                    "protocol_version": 1,
+                    "port": app["port"],
+                    "scheme": app["scheme"],
+                    "ca_fingerprint": app["tls_info"].get("ca_fingerprint"),
+                }
+            ).encode("utf-8")
             targets = {item["broadcast"] for item in _host_interfaces() if item.get("broadcast")}
             targets.add("255.255.255.255")
             for target in targets:
@@ -138,7 +153,9 @@ async def _periodic_transfer_cleanup():
         await asyncio.sleep(15)
         with STATE["lock"]:
             changed = _expire_stale_jobs()
-            busy = any(j.get("status") == "transferring" for j in STATE.get("transfer_jobs", {}).values())
+            busy = any(
+                j.get("status") == "transferring" for j in STATE.get("transfer_jobs", {}).values()
+            )
         if changed or busy:
             request_save()
         if time.time() - last_gc > 3600:
@@ -171,9 +188,10 @@ async def security_headers_middleware(request: web.Request, handler):
         resp.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; "
-            "worker-src 'self' blob:; frame-ancestors 'none'"
+            "worker-src 'self' blob:; frame-ancestors 'none'",
         )
     return resp
+
 
 # ClientConnectionResetError exists in aiohttp >= 3.10; fall back gracefully.
 _DISCONNECT_ERRORS = tuple(
@@ -204,7 +222,11 @@ async def api_error_middleware(request: web.Request, handler):
 
 def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
-    app = web.Application(client_max_size=1024 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536, "read_bufsize": 1024 * 1024}, middlewares=[api_error_middleware, security_headers_middleware])
+    app = web.Application(
+        client_max_size=1024 * 1024,
+        handler_args={"max_line_size": 65536, "max_field_size": 65536, "read_bufsize": 1024 * 1024},
+        middlewares=[api_error_middleware, security_headers_middleware],
+    )
     app["port"] = port
     app["scheme"] = "https" if tls_info else "http"
     app["tls_info"] = tls_info or {}

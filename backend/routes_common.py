@@ -1,6 +1,7 @@
 """
 routes_common.py — Shared constants, security helpers, and interface utilities.
 """
+
 import asyncio
 import errno
 import hashlib
@@ -24,8 +25,16 @@ import aiohttp
 from aiohttp import web
 
 from .config import (
-    STATE, CHUNK_SIZE, MAX_CONCURRENT_TRANSFERS, MAX_TRANSFERS_PER_DEVICE, PAIRING_CODE, save_persistent_state,
-    request_save, record_transfer, ACTIVE_SLOT_STATES, STALE_TRANSFER_SECONDS,
+    STATE,
+    CHUNK_SIZE,
+    MAX_CONCURRENT_TRANSFERS,
+    MAX_TRANSFERS_PER_DEVICE,
+    PAIRING_CODE,
+    save_persistent_state,
+    request_save,
+    record_transfer,
+    ACTIVE_SLOT_STATES,
+    STALE_TRANSFER_SECONDS,
 )
 
 _ClientConnectionReset = getattr(aiohttp, "ClientConnectionResetError", ConnectionResetError)
@@ -49,14 +58,54 @@ _HEADER_ALIASES = {
     "X-Device-Token": ("X-Device-Token", "X-SuperShare-Device-Token", "X-SuperShare-Token"),
 }
 
-_EXCLUDED_ADAPTERS = ("vethernet", "virtualbox", "vmware", "hyper-v", "loopback", "wsl", "bluetooth")
+_EXCLUDED_ADAPTERS = (
+    "vethernet",
+    "virtualbox",
+    "vmware",
+    "hyper-v",
+    "loopback",
+    "wsl",
+    "bluetooth",
+)
 
 _PAIRING_WORDS = (
-    "amber", "anchor", "apple", "beacon", "breeze", "cedar", "canyon", "cherry",
-    "clover", "copper", "coral", "dawn", "delta", "ember", "falcon", "forest",
-    "frost", "harbor", "haven", "island", "meadow", "orbit", "peak", "pebble",
-    "quarry", "river", "rover", "shadow", "sierra", "silver", "summit", "timber",
-    "valley", "velvet", "whisper", "willow", "zephyr",
+    "amber",
+    "anchor",
+    "apple",
+    "beacon",
+    "breeze",
+    "cedar",
+    "canyon",
+    "cherry",
+    "clover",
+    "copper",
+    "coral",
+    "dawn",
+    "delta",
+    "ember",
+    "falcon",
+    "forest",
+    "frost",
+    "harbor",
+    "haven",
+    "island",
+    "meadow",
+    "orbit",
+    "peak",
+    "pebble",
+    "quarry",
+    "river",
+    "rover",
+    "shadow",
+    "sierra",
+    "silver",
+    "summit",
+    "timber",
+    "valley",
+    "velvet",
+    "whisper",
+    "willow",
+    "zephyr",
 )
 
 
@@ -71,10 +120,9 @@ async def _json_body(request: web.Request) -> dict:
 
 
 def _same_target(job, target):
-    return (
-        os.path.abspath(job.get("destination", "")) == os.path.abspath(target)
-        or os.path.abspath(job.get("requested_destination", "")) == os.path.abspath(target)
-    )
+    return os.path.abspath(job.get("destination", "")) == os.path.abspath(
+        target
+    ) or os.path.abspath(job.get("requested_destination", "")) == os.path.abspath(target)
 
 
 def _paired_device(request: web.Request):
@@ -87,8 +135,12 @@ def _paired_device(request: web.Request):
             return None
         token = _device_header(request, "X-Device-Token")
         token_hash = device.get("token_hash", "")
-        if not token or not token_hash or not hmac.compare_digest(
-            hashlib.sha256(token.encode("utf-8")).hexdigest(), token_hash
+        if (
+            not token
+            or not token_hash
+            or not hmac.compare_digest(
+                hashlib.sha256(token.encode("utf-8")).hexdigest(), token_hash
+            )
         ):
             return None
         return dict(device)
@@ -132,7 +184,9 @@ def _connection_kind(ip, interfaces):
         return "This laptop"
     for item in interfaces:
         try:
-            network = ipaddress.ip_network(f"{item['address']}/{item.get('netmask') or '255.255.255.0'}", strict=False)
+            network = ipaddress.ip_network(
+                f"{item['address']}/{item.get('netmask') or '255.255.255.0'}", strict=False
+            )
         except ValueError:
             continue
         if address in network:
@@ -192,7 +246,9 @@ def _device_header(request: web.Request, key: str, fallback: str = "") -> str:
 
 
 def _device_header_text(request: web.Request, key: str, fallback: str = "") -> str:
-    return urllib.parse.unquote(_device_header(request, key, fallback), encoding="utf-8", errors="replace")
+    return urllib.parse.unquote(
+        _device_header(request, key, fallback), encoding="utf-8", errors="replace"
+    )
 
 
 def _relative_to_share(abs_path, share_dir):
@@ -208,6 +264,7 @@ def _all_host_interfaces():
     seen = set()
     try:
         import psutil
+
         net_addrs = psutil.net_if_addrs()
         for name, addrs in net_addrs.items():
             for addr in addrs:
@@ -251,18 +308,34 @@ def _select_hotspot_interface(interfaces):
             address = ipaddress.ip_address(item["address"])
         except (ValueError, KeyError, TypeError):
             continue
-        if address.version != 4 or address.is_loopback or address.is_link_local or address.is_multicast or not address.is_private:
+        if (
+            address.version != 4
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or not address.is_private
+        ):
             continue
         name = str(item.get("name", "")).lower()
         # Skip loopback/bridge adapters; be careful not to exclude "local area connection*"
         if name == "lo" or name.startswith("br-") or any(m in name for m in _EXCLUDED_ADAPTERS):
             continue
         # Windows Mobile Hotspot adapter: "192.168.137.1" or "local area connection*"
-        hosted = str(address) == "192.168.137.1" or (
-            "local area connection" in name and "192.168.137" in str(address)
-        ) or ("local area connection" in name and address.packed[0:3] == bytes([192, 168, 137]))
-        wireless = any(m in name for m in ("wi-fi", "wifi", "wireless", "wlan", "wlp", "wlo", "wlx")) or name in ("en0", "en1")
-        rank, kind = (0, "Windows hotspot") if hosted else (1, "Wi-Fi / hotspot") if wireless else (2, "Local network")
+        hosted = (
+            str(address) == "192.168.137.1"
+            or ("local area connection" in name and "192.168.137" in str(address))
+            or ("local area connection" in name and address.packed[0:3] == bytes([192, 168, 137]))
+        )
+        wireless = any(
+            m in name for m in ("wi-fi", "wifi", "wireless", "wlan", "wlp", "wlo", "wlx")
+        ) or name in ("en0", "en1")
+        rank, kind = (
+            (0, "Windows hotspot")
+            if hosted
+            else (1, "Wi-Fi / hotspot")
+            if wireless
+            else (2, "Local network")
+        )
         ranked.append((rank, name, item["address"], {**item, "kind": kind}))
     ranked.sort(key=lambda r: r[:3])
     return [entry[3] for entry in ranked]
@@ -322,7 +395,9 @@ def _require_host_dashboard(request: web.Request):
 def _require_share_access(request: web.Request, permission: str = "read"):
     perms = _device_permissions(request)
     if not perms.get(permission):
-        raise web.HTTPForbidden(text=f"This browser does not have {permission} access to the shared folder")
+        raise web.HTTPForbidden(
+            text=f"This browser does not have {permission} access to the shared folder"
+        )
 
 
 def _authorize_transfer_write(request: web.Request) -> str:
@@ -330,7 +405,11 @@ def _authorize_transfer_write(request: web.Request) -> str:
     perms = _device_permissions(request, device)
     if not perms.get("write"):
         raise web.HTTPForbidden(text="This browser does not have permission to upload files")
-    return device["id"] if device else _device_header(request, "X-Device-Id", f"anon-{uuid.uuid4().hex[:8]}")
+    return (
+        device["id"]
+        if device
+        else _device_header(request, "X-Device-Id", f"anon-{uuid.uuid4().hex[:8]}")
+    )
 
 
 def _authenticated_device(request: web.Request, device: dict) -> bool:
@@ -338,14 +417,16 @@ def _authenticated_device(request: web.Request, device: dict) -> bool:
         return False
     token = _device_header(request, "X-Device-Token")
     token_hash = device.get("token_hash", "")
-    return bool(token and token_hash and hmac.compare_digest(
-        hashlib.sha256(token.encode("utf-8")).hexdigest(), token_hash
-    ))
+    return bool(
+        token
+        and token_hash
+        and hmac.compare_digest(hashlib.sha256(token.encode("utf-8")).hexdigest(), token_hash)
+    )
 
 
 def _content_disposition(name):
     ascii_name = name.encode("ascii", "replace").decode().replace('"', "_").replace("?", "_")
-    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{urllib.parse.quote(name, safe="")}'
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{urllib.parse.quote(name, safe='')}"
 
 
 def _requester_id(request):
@@ -379,5 +460,3 @@ class _PipeWriter:
 
     def flush(self):
         pass
-
-

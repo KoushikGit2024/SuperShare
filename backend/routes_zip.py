@@ -1,6 +1,7 @@
 """
 routes_zip.py — Streaming and preflight ZIP archive generation for folders and multi-selection downloads.
 """
+
 import asyncio
 import os
 import queue
@@ -14,15 +15,25 @@ import zipfile
 from aiohttp import web
 
 from .config import (
-    STATE, record_transfer,
+    STATE,
+    record_transfer,
 )
 from .file_manager import (
-    safe_join, build_folder_zip, build_multi_selection_zip, sanitize_relative_path,
+    safe_join,
+    build_folder_zip,
+    build_multi_selection_zip,
+    sanitize_relative_path,
 )
 from .routes_common import *
 from .routes_common import (
-    DISCONNECT_ERRORS, _json_body, _device_header, _device_permissions,
-    _require_share_access, _effective_device, _paired_device, _is_local_host_request,
+    DISCONNECT_ERRORS,
+    _json_body,
+    _device_header,
+    _device_permissions,
+    _require_share_access,
+    _effective_device,
+    _paired_device,
+    _is_local_host_request,
     _PipeWriter,
 )
 from .routes_files import _content_disposition, _begin_download, _end_download
@@ -30,11 +41,15 @@ from .routes_files import _content_disposition, _begin_download, _end_download
 
 def iter_zip_entries(base, rel_paths):
     base_real = os.path.normcase(os.path.realpath(base))
+
     def inside(p):
         try:
-            return os.path.commonpath([base_real, os.path.normcase(os.path.realpath(p))]) == base_real
+            return (
+                os.path.commonpath([base_real, os.path.normcase(os.path.realpath(p))]) == base_real
+            )
         except ValueError:
             return False
+
     for rel in rel_paths:
         target = safe_join(base, rel)
         if os.path.isfile(target):
@@ -42,12 +57,17 @@ def iter_zip_entries(base, rel_paths):
         elif os.path.isdir(target):
             top = os.path.basename(target) or "shared"
             for root, dirs, files in os.walk(target):
-                dirs[:] = [d for d in dirs if not d.startswith(".supershare-") and inside(os.path.join(root, d))]
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if not d.startswith(".supershare-") and inside(os.path.join(root, d))
+                ]
                 for f in files:
                     full = os.path.join(root, f)
                     if f.startswith((".supershare-", ".temp_")) or not inside(full):
                         continue
                     yield full, os.path.join(top, os.path.relpath(full, target))
+
 
 def _zip_add(zf, path, arc):
     st = os.stat(path)
@@ -59,6 +79,7 @@ def _zip_add(zf, path, arc):
     with open(path, "rb") as src, zf.open(info, "w", force_zip64=st.st_size >= 0xFFFFFFFF) as dst:
         shutil.copyfileobj(src, dst, 1024 * 1024)
 
+
 def _requester_id(request):
     device = _paired_device(request)
     if device:
@@ -67,6 +88,7 @@ def _requester_id(request):
     if re.fullmatch(r"[A-Za-z0-9_-]{8,80}", supplied or ""):
         return supplied
     return "local-dashboard" if _is_local_host_request(request) else "unknown"
+
 
 async def _stream_zip(request, rel_paths, zip_name):
     base = STATE["share_dir"]
@@ -87,7 +109,9 @@ async def _stream_zip(request, rel_paths, zip_name):
 
     def produce():
         try:
-            with zipfile.ZipFile(_PipeWriter(q, stop), "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+            with zipfile.ZipFile(
+                _PipeWriter(q, stop), "w", zipfile.ZIP_STORED, allowZip64=True
+            ) as zf:
                 for path, arc in entries:
                     if stop.is_set():
                         return
@@ -96,16 +120,21 @@ async def _stream_zip(request, rel_paths, zip_name):
                     except (OSError, ValueError) as exc:
                         skipped.append(f"{arc}: {getattr(exc, 'strerror', None) or exc}")
                 if skipped:
-                    zf.writestr("_SKIPPED_FILES.txt", "These files could not be read:\n" + "\n".join(skipped))
+                    zf.writestr(
+                        "_SKIPPED_FILES.txt",
+                        "These files could not be read:\n" + "\n".join(skipped),
+                    )
             put(None)
         except BaseException as exc:
             put(exc)
 
-    resp = web.StreamResponse(headers={
-        "Content-Type": "application/zip",
-        "Content-Disposition": _content_disposition(zip_name),
-        "Cache-Control": "no-store",
-    })
+    resp = web.StreamResponse(
+        headers={
+            "Content-Type": "application/zip",
+            "Content-Disposition": _content_disposition(zip_name),
+            "Cache-Control": "no-store",
+        }
+    )
     await resp.prepare(request)
     device_id = _requester_id(request)
     est = 0
@@ -162,6 +191,7 @@ async def _stream_zip(request, rel_paths, zip_name):
         await asyncio.gather(worker, return_exceptions=True)
     return resp
 
+
 from .file_manager import (
     safe_join,
     list_directory,
@@ -175,12 +205,39 @@ from .file_manager import (
 
 _pair_attempts = {}
 _device_persisted_at = {}
-_PAIRING_WORDS = ("amber", "birch", "cobalt", "delta", "ember", "fern", "granite", "harbor",
-                  "indigo", "juniper", "kepler", "linen", "maple", "north", "onyx", "pepper",
-                  "quartz", "river", "silver", "timber", "umber", "violet", "willow", "xenon",
-                  "yellow", "zephyr")
+_PAIRING_WORDS = (
+    "amber",
+    "birch",
+    "cobalt",
+    "delta",
+    "ember",
+    "fern",
+    "granite",
+    "harbor",
+    "indigo",
+    "juniper",
+    "kepler",
+    "linen",
+    "maple",
+    "north",
+    "onyx",
+    "pepper",
+    "quartz",
+    "river",
+    "silver",
+    "timber",
+    "umber",
+    "violet",
+    "willow",
+    "xenon",
+    "yellow",
+    "zephyr",
+)
 
-async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filename: str) -> web.StreamResponse:
+
+async def _stream_and_remove_zip(
+    request: web.Request, tmp_zip: str, zip_filename: str
+) -> web.StreamResponse:
     device_id = _requester_id(request)
     sent = 0
     try:
@@ -191,7 +248,7 @@ async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filenam
                 "Content-Type": "application/zip",
                 "Content-Disposition": f'attachment; filename="{urllib.parse.quote(zip_filename)}"',
                 "Content-Length": str(zip_size),
-            }
+            },
         )
         await resp.prepare(request)
         with open(tmp_zip, "rb") as f:
@@ -202,10 +259,25 @@ async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filenam
                 await resp.write(chunk)
                 sent += len(chunk)
         await resp.write_eof()
-        record_transfer(device_id, zip_filename, zip_size, detail="Sent ZIP to connected device", destination=device_id, direction="send")
+        record_transfer(
+            device_id,
+            zip_filename,
+            zip_size,
+            detail="Sent ZIP to connected device",
+            destination=device_id,
+            direction="send",
+        )
         return resp
     except Exception as exc:
-        record_transfer(device_id, zip_filename, sent, status="failed", detail=f"ZIP download interrupted: {str(exc)[:140]}", destination=device_id, direction="send")
+        record_transfer(
+            device_id,
+            zip_filename,
+            sent,
+            status="failed",
+            detail=f"ZIP download interrupted: {str(exc)[:140]}",
+            destination=device_id,
+            direction="send",
+        )
         raise
     finally:
         if os.path.exists(tmp_zip):
@@ -214,28 +286,37 @@ async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filenam
             except Exception:
                 pass
 
+
 async def zip_folder_handler(request: web.Request) -> web.StreamResponse:
     _require_share_access(request)
     rel = request.query.get("path", "")
     zip_name = (os.path.basename(rel.rstrip("/")) or "shared-folder") + ".zip"
     return await _stream_zip(request, [rel], zip_name)
 
+
 async def zip_selected_handler(request: web.Request) -> web.StreamResponse:
     _require_share_access(request)
     try:
         items = json.loads(request.query.get("items", "[]"))
-        if not (isinstance(items, list) and len(items) <= 500 and all(isinstance(i, str) for i in items)):
+        if not (
+            isinstance(items, list) and len(items) <= 500 and all(isinstance(i, str) for i in items)
+        ):
             raise ValueError
     except ValueError:
         raise web.HTTPBadRequest(text="Invalid selection")
     return await _stream_zip(request, items, f"supershare_selected_{len(items)}.zip")
+
 
 async def zip_preflight_handler(request: web.Request) -> web.Response:
     _require_share_access(request)
     if "items" in request.query:
         try:
             items = json.loads(request.query.get("items", "[]"))
-            if not (isinstance(items, list) and len(items) <= 500 and all(isinstance(i, str) for i in items)):
+            if not (
+                isinstance(items, list)
+                and len(items) <= 500
+                and all(isinstance(i, str) for i in items)
+            ):
                 raise ValueError
         except ValueError:
             raise web.HTTPBadRequest(text="Invalid selection")

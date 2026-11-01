@@ -1,6 +1,7 @@
 """
 routes_devices.py — Device pairing, profile tracking, permissions, policies, and heartbeat handlers.
 """
+
 import asyncio
 import hashlib
 import hmac
@@ -14,15 +15,32 @@ import urllib.parse
 from aiohttp import web
 
 from .config import (
-    STATE, PAIRING_CODE, save_persistent_state, request_save, ACTIVE_SLOT_STATES,
+    STATE,
+    PAIRING_CODE,
+    save_persistent_state,
+    request_save,
+    ACTIVE_SLOT_STATES,
 )
 from .routes_common import *
 from .routes_common import (
-    OPEN_MODE, _PAIRING_WORDS, _pair_attempts, _device_persisted_at, _ACTIVE_DOWNLOADS,
-    _json_body, _device_header, _device_header_text, _safe_display_text,
-    _is_local_host_request, _require_host_dashboard, _authenticated_device,
-    _device_permissions, _connection_kind, _host_addresses, _host_interfaces,
-    _paired_device, _effective_device,
+    OPEN_MODE,
+    _PAIRING_WORDS,
+    _pair_attempts,
+    _device_persisted_at,
+    _ACTIVE_DOWNLOADS,
+    _json_body,
+    _device_header,
+    _device_header_text,
+    _safe_display_text,
+    _is_local_host_request,
+    _require_host_dashboard,
+    _authenticated_device,
+    _device_permissions,
+    _connection_kind,
+    _host_addresses,
+    _host_interfaces,
+    _paired_device,
+    _effective_device,
 )
 from .routes_transfers import _public_transfers, _cancel_device_transfer_jobs
 
@@ -35,31 +53,52 @@ async def pairing_qr_handler(request: web.Request) -> web.Response:
     address = interfaces[0]["address"]
     port = request.url.port or 80
     from .routes_system import _is_port_80_proxy_active
+
     has_proxy = _is_port_80_proxy_active() if port != 80 else True
     port_part = "" if (port in (80, 443) or has_proxy) else f":{port}"
-    pairing_url = f"{request.scheme}://{address}{port_part}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
+    pairing_url = (
+        f"{request.scheme}://{address}{port_part}/?pair_code={urllib.parse.quote(PAIRING_CODE)}"
+    )
     try:
         import qrcode
         from qrcode.image.svg import SvgPathImage
     except ImportError as exc:
-        raise web.HTTPServiceUnavailable(text="QR generation is unavailable. Install project requirements and restart SuperShare.") from exc
-    code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4)
+        raise web.HTTPServiceUnavailable(
+            text="QR generation is unavailable. Install project requirements and restart SuperShare."
+        ) from exc
+    code = qrcode.QRCode(
+        version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=4
+    )
     code.add_data(pairing_url)
     svg = code.make_image(image_factory=SvgPathImage).to_string(encoding="unicode")
-    return web.Response(text=svg, content_type="image/svg+xml", headers={
-        "Cache-Control": "no-store", "X-SuperShare-Pairing-URL": pairing_url,
-    })
+    return web.Response(
+        text=svg,
+        content_type="image/svg+xml",
+        headers={
+            "Cache-Control": "no-store",
+            "X-SuperShare-Pairing-URL": pairing_url,
+        },
+    )
+
 
 async def status_handler(request: web.Request) -> web.Response:
     device_id = _device_header(request, "id").strip()
     local_request = _is_local_host_request(request)
     with STATE["lock"]:
         existing = STATE["devices"].get(device_id, {})
-        may_update_identity = local_request or not existing.get("token_hash") or _authenticated_device(request, existing)
+        may_update_identity = (
+            local_request
+            or not existing.get("token_hash")
+            or _authenticated_device(request, existing)
+        )
     if device_id and may_update_identity:
-        _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
-                      _device_header_text(request, "platform", "Device"), request.remote,
-                      create=local_request or OPEN_MODE)
+        _touch_device(
+            device_id,
+            _device_header_text(request, "name", "Unknown device"),
+            _device_header_text(request, "platform", "Device"),
+            request.remote,
+            create=local_request or OPEN_MODE,
+        )
     if local_request and device_id:
         changed = False
         with STATE["lock"]:
@@ -67,7 +106,9 @@ async def status_handler(request: web.Request) -> web.Response:
             if device:
                 changed = not device.get("trusted") or not device.get("token_hash")
                 device["trusted"] = True
-                device["token_hash"] = device.get("token_hash") or hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+                device["token_hash"] = (
+                    device.get("token_hash") or hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+                )
         if changed:
             save_persistent_state()
             _device_persisted_at[device_id] = time.monotonic()
@@ -76,19 +117,25 @@ async def status_handler(request: web.Request) -> web.Response:
     can_view = local_request or perms["read"]
     mine = []
     if not local_request and device_id:
-        mine = [{**item, "destination": item.get("relative_path") or ""}
-                for item in _public_transfers(device_id=device_id)]
-    return web.json_response({
-        "status": "online",
-        "server": "SuperShare",
-        "share_root": STATE["share_dir"] if can_view else None,
-        "host_name": os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "SuperShare host"),
-        "host_dashboard": local_request,
-        "access": (effective or {}).get("access", "read-write"),
-        "devices": _public_devices() if local_request else [],
-        "transfers": _public_transfers() if local_request else [],
-        "my_transfers": mine,
-    })
+        mine = [
+            {**item, "destination": item.get("relative_path") or ""}
+            for item in _public_transfers(device_id=device_id)
+        ]
+    return web.json_response(
+        {
+            "status": "online",
+            "server": "SuperShare",
+            "share_root": STATE["share_dir"] if can_view else None,
+            "host_name": os.environ.get("COMPUTERNAME")
+            or (os.uname().nodename if hasattr(os, "uname") else "SuperShare host"),
+            "host_dashboard": local_request,
+            "access": (effective or {}).get("access", "read-write"),
+            "devices": _public_devices() if local_request else [],
+            "transfers": _public_transfers() if local_request else [],
+            "my_transfers": mine,
+        }
+    )
+
 
 async def upload_permission_handler(request: web.Request) -> web.Response:
     device_id = _device_header(request, "id").strip()
@@ -102,22 +149,38 @@ async def upload_permission_handler(request: web.Request) -> web.Response:
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         raise web.HTTPBadRequest(text="Invalid device identity")
     if may_update_identity:
-        _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
-                      _device_header_text(request, "platform", "Device"), request.remote, create=local_request)
+        _touch_device(
+            device_id,
+            _device_header_text(request, "name", "Unknown device"),
+            _device_header_text(request, "platform", "Device"),
+            request.remote,
+            create=local_request,
+        )
     local = _is_local_host_request(request)
     device = _paired_device(request)
-    perms = {"read": True, "write": True} if (local or OPEN_MODE) else _device_permissions(request, device)
+    perms = (
+        {"read": True, "write": True}
+        if (local or OPEN_MODE)
+        else _device_permissions(request, device)
+    )
     confirmed = local or OPEN_MODE or bool(device and device.get("pair_confirmed"))
-    return web.json_response({
-        "allowed": perms["write"],
-        "approved": any(perms.values()),
-        "paired": local or OPEN_MODE or bool(device),
-        "pair_confirmed": confirmed,
-        "verification_phrase": None if confirmed or not device else device.get("verification_phrase"),
-        "permissions": perms,
-        "device_id": device_id,
-        "message": "Connected & Ready to Share" if any(perms.values()) else "Waiting for host approval"
-    })
+    return web.json_response(
+        {
+            "allowed": perms["write"],
+            "approved": any(perms.values()),
+            "paired": local or OPEN_MODE or bool(device),
+            "pair_confirmed": confirmed,
+            "verification_phrase": None
+            if confirmed or not device
+            else device.get("verification_phrase"),
+            "permissions": perms,
+            "device_id": device_id,
+            "message": "Connected & Ready to Share"
+            if any(perms.values())
+            else "Waiting for host approval",
+        }
+    )
+
 
 async def pair_device_handler(request: web.Request) -> web.Response:
     body = await _json_body(request)
@@ -138,7 +201,12 @@ async def pair_device_handler(request: web.Request) -> web.Response:
     token = secrets.token_urlsafe(32)
     phrase = " ".join(secrets.choice(_PAIRING_WORDS) for _ in range(3))
 
-    _touch_device(device_id, str(body.get("name", "Unknown device")), str(body.get("type", "Device")), request.remote)
+    _touch_device(
+        device_id,
+        str(body.get("name", "Unknown device")),
+        str(body.get("type", "Device")),
+        request.remote,
+    )
     with STATE["lock"]:
         device = STATE["devices"][device_id]
         device["token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -149,10 +217,20 @@ async def pair_device_handler(request: web.Request) -> web.Response:
         device.pop("approved_until", None)
     save_persistent_state()
     _device_persisted_at[device_id] = time.monotonic()
-    response = web.json_response({"status": "paired", "device_id": device_id, "verification_phrase": phrase})
-    response.set_cookie("supershare_token", token, httponly=True, secure=request.scheme == "https",
-                        samesite="Strict", path="/api", max_age=31536000)
+    response = web.json_response(
+        {"status": "paired", "device_id": device_id, "verification_phrase": phrase}
+    )
+    response.set_cookie(
+        "supershare_token",
+        token,
+        httponly=True,
+        secure=request.scheme == "https",
+        samesite="Strict",
+        path="/api",
+        max_age=31536000,
+    )
     return response
+
 
 async def confirm_pairing_handler(request: web.Request) -> web.Response:
     device_id = _device_header(request, "id").strip()
@@ -163,6 +241,7 @@ async def confirm_pairing_handler(request: web.Request) -> web.Response:
         device["pair_confirmed"] = True
     save_persistent_state()
     return web.json_response({"status": "confirmed"})
+
 
 def _touch_device(device_id, name, device_type, remote, create=True):
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
@@ -180,14 +259,21 @@ def _touch_device(device_id, name, device_type, remote, create=True):
             return
         old = old or {}
         saved_display_name = old.get("display_name", "")
-        if isinstance(saved_display_name, str) and "\uFFFD" in saved_display_name and "\uFFFD" not in name:
+        if (
+            isinstance(saved_display_name, str)
+            and "\ufffd" in saved_display_name
+            and "\ufffd" not in name
+        ):
             saved_display_name = ""
         display_name = _safe_display_text(saved_display_name or name, 80, "Unknown device")
-        persist = (not old or old.get("name") != display_name
-                   or old.get("type") != device_type
-                   or old.get("ip") != (remote or old.get("ip", ""))
-                   or not old.get("trusted")
-                   or time.monotonic() - _device_persisted_at.get(device_id, 0) >= 60)
+        persist = (
+            not old
+            or old.get("name") != display_name
+            or old.get("type") != device_type
+            or old.get("ip") != (remote or old.get("ip", ""))
+            or not old.get("trusted")
+            or time.monotonic() - _device_persisted_at.get(device_id, 0) >= 60
+        )
         STATE["devices"][device_id] = {
             "id": device_id,
             "name": display_name,
@@ -200,7 +286,9 @@ def _touch_device(device_id, name, device_type, remote, create=True):
             "trusted": True if OPEN_MODE else old.get("trusted", False),
             "approved_until": 0,
             "token_hash": old.get("token_hash", ""),
-            "permissions": {"read": True, "write": True} if OPEN_MODE else old.get("permissions", {"read": False, "write": False}),
+            "permissions": {"read": True, "write": True}
+            if OPEN_MODE
+            else old.get("permissions", {"read": False, "write": False}),
             "pair_confirmed": True if OPEN_MODE else old.get("pair_confirmed", False),
             "verification_phrase": old.get("verification_phrase", ""),
             **{key: old[key] for key in ("access", "paused", "limit_kbps") if key in old},
@@ -209,6 +297,7 @@ def _touch_device(device_id, name, device_type, remote, create=True):
         save_persistent_state()
         _device_persisted_at[device_id] = time.monotonic()
     _merge_duplicate_profiles(device_id)
+
 
 def _merge_duplicate_profiles(new_id):
     now = int(time.time())
@@ -220,14 +309,25 @@ def _merge_duplicate_profiles(new_id):
         for old_id, old in list(STATE["devices"].items()):
             if old_id == new_id:
                 continue
-            same = (old.get("type") == new.get("type")
-                    and old.get("ip") == new.get("ip")
-                    and (old.get("display_name") or old.get("name")) in (new.get("display_name") or new.get("name"), old.get("name"))
-                    and now - old.get("last_seen", 0) > 25)
+            same = (
+                old.get("type") == new.get("type")
+                and old.get("ip") == new.get("ip")
+                and (old.get("display_name") or old.get("name"))
+                in (new.get("display_name") or new.get("name"), old.get("name"))
+                and now - old.get("last_seen", 0) > 25
+            )
             if not same:
                 continue
             for key in ("display_name", "access", "limit_kbps", "paused"):
-                if key in old and key not in new or (key == "display_name" and old.get("display_name") and not new.get("display_name")):
+                if (
+                    key in old
+                    and key not in new
+                    or (
+                        key == "display_name"
+                        and old.get("display_name")
+                        and not new.get("display_name")
+                    )
+                ):
                     new[key] = old[key]
             if old.get("display_name"):
                 new["name"] = old["display_name"]
@@ -240,6 +340,7 @@ def _merge_duplicate_profiles(new_id):
     if merged:
         save_persistent_state()
     return merged
+
 
 def _public_devices():
     now = int(time.time())
@@ -270,9 +371,11 @@ def _public_devices():
             result.append(item)
         return sorted(result, key=lambda d: (not d["online"], d["name"].lower()))
 
+
 async def devices_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     return web.json_response({"devices": _public_devices(), "transfers": _public_transfers()})
+
 
 async def rename_device_handler(request: web.Request) -> web.Response:
     body = await _json_body(request)
@@ -284,12 +387,17 @@ async def rename_device_handler(request: web.Request) -> web.Response:
         device = STATE["devices"].get(device_id)
         if not device or not name:
             raise web.HTTPBadRequest(text="Device and non-empty name are required")
-        if not local_request and (requester_id != device_id or not _authenticated_device(request, device)):
-            raise web.HTTPForbidden(text="Only the laptop dashboard or the authenticated browser profile can rename this profile")
+        if not local_request and (
+            requester_id != device_id or not _authenticated_device(request, device)
+        ):
+            raise web.HTTPForbidden(
+                text="Only the laptop dashboard or the authenticated browser profile can rename this profile"
+            )
         device["name"] = name
         device["display_name"] = name
     save_persistent_state()
     return web.json_response({"status": "ok"})
+
 
 async def forget_device_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
@@ -299,6 +407,7 @@ async def forget_device_handler(request: web.Request) -> web.Response:
     _cancel_device_transfer_jobs(body.get("id", ""), "Browser profile was forgotten")
     save_persistent_state()
     return web.json_response({"status": "ok"})
+
 
 async def revoke_device_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
@@ -317,6 +426,7 @@ async def revoke_device_handler(request: web.Request) -> web.Response:
     save_persistent_state()
     return web.json_response({"status": "ok"})
 
+
 async def approve_device_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     body = await _json_body(request)
@@ -327,11 +437,16 @@ async def approve_device_handler(request: web.Request) -> web.Response:
         if not device.get("token_hash"):
             raise web.HTTPConflict(text="Pair this device before granting access")
         if not device.get("pair_confirmed"):
-            raise web.HTTPConflict(text="Confirm that the verification phrase matches before granting access")
+            raise web.HTTPConflict(
+                text="Confirm that the verification phrase matches before granting access"
+            )
         requested = body.get("permissions", {"read": True, "write": True})
         if not isinstance(requested, dict):
             raise web.HTTPBadRequest(text="Permissions must be an object")
-        device["permissions"] = {"read": bool(requested.get("read")), "write": bool(requested.get("write"))}
+        device["permissions"] = {
+            "read": bool(requested.get("read")),
+            "write": bool(requested.get("write")),
+        }
         if body.get("remember"):
             device["trusted"] = True
             device.pop("approved_until", None)
@@ -340,6 +455,7 @@ async def approve_device_handler(request: web.Request) -> web.Response:
             device["approved_until"] = int(time.time()) + 15 * 60
     save_persistent_state()
     return web.json_response({"status": "ok"})
+
 
 async def device_policy_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
@@ -366,13 +482,18 @@ async def device_policy_handler(request: web.Request) -> web.Response:
     save_persistent_state()
     return web.json_response({"status": "ok"})
 
+
 async def device_terminate_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     body = await _json_body(request)
     device_id = str(body.get("id", ""))
     with STATE["lock"]:
-        count = sum(1 for job in STATE.get("transfer_jobs", {}).values()
-                    if job.get("device_id") == device_id and job.get("status") in ACTIVE_SLOT_STATES | {"interrupted"})
+        count = sum(
+            1
+            for job in STATE.get("transfer_jobs", {}).values()
+            if job.get("device_id") == device_id
+            and job.get("status") in ACTIVE_SLOT_STATES | {"interrupted"}
+        )
     for dl in list(_ACTIVE_DOWNLOADS.values()):
         if dl["device_id"] == device_id:
             dl["stop"] = True
