@@ -3,6 +3,7 @@ def _same_target(job, target):
     return os.path.normcase(os.path.realpath(wanted)) == os.path.normcase(os.path.realpath(target))
 
 import queue
+import threading
 import stat as _stat
 import zipfile
 """
