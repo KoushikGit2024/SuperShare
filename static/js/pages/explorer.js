@@ -3,8 +3,10 @@
 // inline preview trigger, batch ZIP download, deletion, and folder picker modal
 
 import { safeStorage, formatBytes, formatDuration, icon, showNotice, responseError, editText, confirmAction } from "../services/utils.js";
-import { deviceHeaders } from "../services/device.js";
+import { deviceHeaders, localDeviceId } from "../services/device.js";
 import { canPreviewFile, openFilePreview, getFileExtension, PREVIEW_TYPES } from "../services/preview.js";
+import { createQueueController } from "../services/queue.js";
+import { trackTransfer } from "../services/hud.js";
 
 export let currentPath = "";
 export let currentItems = [];
@@ -34,34 +36,91 @@ export function setFileViewMode(mode) {
   }
 }
 
+const pathOf = item => (currentPath ? `${currentPath}/${item.name}` : item.name);
+
+export const filterState = { query: "", type: "all" };
+const TYPE_GROUPS = {
+  images: PREVIEW_TYPES.img,
+  videos: PREVIEW_TYPES.video,
+  audio: PREVIEW_TYPES.audio,
+  documents: new Set(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "odt", "csv"]),
+  archives: new Set(["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso"])
+};
+
+export function visibleItems() {
+  const query = filterState.query.trim().toLowerCase();
+  return currentItems.filter(item => {
+    if (query && !item.name.toLowerCase().includes(query)) return false;
+    if (filterState.type === "all" || item.is_dir) return true; // folders stay visible for navigation
+    return TYPE_GROUPS[filterState.type]?.has(getFileExtension(item.name)) ?? true;
+  });
+}
+
+function updateFilterCount(shown) {
+  const el = document.getElementById("filterCount");
+  if (!el) return;
+  const filtering = filterState.query.trim() || filterState.type !== "all";
+  el.textContent = filtering ? `Showing ${shown} of ${currentItems.length}` : "";
+}
+
+function pruneSelectionToVisible() {
+  const keep = new Set(visibleItems().map(pathOf));
+  [...selectedItems.keys()].forEach(key => { if (!keep.has(key)) selectedItems.delete(key); });
+}
+
+export function clearSelection() {
+  selectedItems.clear();
+  document.querySelectorAll(".file-item.selected").forEach(li => li.classList.remove("selected"));
+  document.querySelectorAll(".item-checkbox").forEach(box => { box.checked = false; });
+  updateSelectionUI();
+}
+
 export function updateSelectionUI() {
   const count = selectedItems.size;
   const summary = document.getElementById("selectionSummary");
   if (summary) summary.textContent = `${count} selected`;
+  const visible = visibleItems();
   const selectAll = document.getElementById("selectAllCheckbox");
-  if (selectAll) selectAll.checked = currentItems.length > 0 && count === currentItems.length;
+  if (selectAll) selectAll.checked = visible.length > 0 && visible.every(item => selectedItems.has(pathOf(item)));
 
+  const onFilesTab = !document.getElementById("storageSection")?.classList.contains("tab-hidden");
+  document.getElementById("selectionActionBar")?.classList.toggle("hidden", count === 0 || !onFilesTab);
+  const barCount = document.getElementById("barSelectedCount");
+  if (barCount) barCount.textContent = `${count} selected`;
+  const barSize = document.getElementById("barSelectedSize");
+  if (barSize) {
+    const items = [...selectedItems.values()];
+    const bytes = items.filter(item => !item.is_dir).reduce((sum, item) => sum + (item.size || 0), 0);
+    const folders = items.filter(item => item.is_dir).length;
+    barSize.textContent = `${formatBytes(bytes)}${folders ? ` + ${folders} folder(s)` : ""}`;
+  }
   const dlSelected = document.getElementById("downloadSelectedBtn");
   if (dlSelected) dlSelected.disabled = count === 0;
   const delSelected = document.getElementById("deleteSelectedBtn");
   if (delSelected) delSelected.disabled = count === 0;
 }
 
+let loadSeq = 0;
 export async function fetchDirectory(path = "") {
+  const seq = ++loadSeq;
+  const response = await fetch("/api/list?path=" + encodeURIComponent(path));
+  if (!response.ok) throw new Error(await responseError(response));
+  const data = await response.json();
+  if (seq !== loadSeq) return; // a newer navigation superseded this response
+
   currentPath = path;
   selectedItems.clear();
+  filterState.query = "";
+  const search = document.getElementById("fileSearch");
+  if (search) search.value = "";
+
   const breadcrumb = document.getElementById("breadcrumbBar");
-  if (breadcrumb) {
-    breadcrumb.replaceChildren(icon("home"), document.createTextNode(` Subpath: /${path}`));
-  }
+  if (breadcrumb) breadcrumb.replaceChildren(icon("home"), document.createTextNode(` Subpath: /${path}`));
   const zipBtn = document.getElementById("zipCurrentBtn");
   if (zipBtn) {
     zipBtn.href = "/api/zip?path=" + encodeURIComponent(path);
     zipBtn.dataset.downloadName = `${path.split("/").filter(Boolean).at(-1) || "shared-folder"}.zip`;
   }
-  const response = await fetch("/api/list?path=" + encodeURIComponent(path));
-  if (!response.ok) throw new Error(await responseError(response));
-  const data = await response.json();
   window._sharedFilesLoaded = true;
   currentItems = data.items || [];
   if (data.share_root) {
@@ -94,19 +153,27 @@ export function showDirectoryError(error) {
 /* --- Live In-Page Download Progress Bar & Speed Tracker --- */
 const MAX_IN_PAGE_DOWNLOAD_BYTES = 48 * 1024 * 1024;
 
+let downloadCtl = null;
+function downloadQueue() {
+  const list = document.getElementById("downloadQueue");
+  if (!list) return null;
+  return (downloadCtl ||= createQueueController(list));
+}
+
 export function addDownloadRow(filename) {
   const queue = document.getElementById("downloadQueue");
-  if (!queue) return null;
-  queue.classList.remove("hidden");
-  while (queue.children.length >= 8) queue.firstElementChild.remove();
+  const ctl = downloadQueue();
+  if (!queue || !ctl) return null;
   const row = document.createElement("li");
   row.className = "download-row";
   const info = document.createElement("div");
   info.className = "download-row-info";
   const title = document.createElement("strong");
   title.textContent = filename;
+  title.title = filename;
   const state = document.createElement("span");
   state.className = "download-state";
+  state.setAttribute("aria-live", "polite");
   state.textContent = "Connecting to host";
   const progress = document.createElement("progress");
   progress.max = 1;
@@ -119,17 +186,26 @@ export function addDownloadRow(filename) {
   info.append(title, state);
   row.append(info, stop, progress);
   queue.prepend(row);
+  ctl.setState(row, "active");
   return { row, title, state, progress, stop };
 }
 
 function triggerBrowserDownload(url, filename) {
   const link = document.createElement("a");
-  link.href = url;
+  // Download-manager requests carry no custom headers; pass the profile id so the host can attribute them.
+  link.href = url.startsWith("blob:") ? url : `${url}${url.includes("?") ? "&" : "?"}did=${encodeURIComponent(localDeviceId)}`;
   link.download = filename;
   link.hidden = true;
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+async function preflightZip(url, signal) {
+  const query = new URL(url, location.origin).search;
+  const response = await fetch(`/api/zip-preflight${query}`, { headers: deviceHeaders(), credentials: "same-origin", signal });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json();
 }
 
 export async function startTrackedDownload(url, filename, expectedSize = 0) {
@@ -138,13 +214,38 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
     triggerBrowserDownload(url, filename);
     return;
   }
+  const ctl = downloadQueue();
+  const tracker = trackTransfer({ kind: "download", label: filename });
   const controller = new AbortController();
+  let outcome = "failed", writer = null, reader = null, saveHandle = null, total = expectedSize;
+  let rate = 0, received = 0;
+
+  const settle = (kind, text) => {
+    outcome = kind;
+    item.state.textContent = text;
+    item.stop.remove();
+    if (kind !== "complete") item.progress.hidden = true; // no half-rendered bars after cancel/fail
+    item.row.classList.add(`download-${kind}`);
+    ctl.setState(item.row, kind);
+  };
+  const handOff = reason => {
+    triggerBrowserDownload(url, filename);
+    settle("complete", reason);
+  };
   item.stop.onclick = () => controller.abort();
-  let writer = null;
-  let reader = null;
-  let saveHandle = null;
 
   try {
+    if (url.startsWith("/api/zip")) {
+      item.state.textContent = "Checking folder contents…";
+      const check = await preflightZip(url, controller.signal);
+      if (check.empty) {
+        settle("skipped", "Nothing to download · this selection has no files");
+        showNotice("Nothing to download: the selection contains no files.", "info");
+        return;
+      }
+      total = check.bytes;
+    }
+
     if (window.isSecureContext && "showSaveFilePicker" in window) {
       try {
         saveHandle = await window.showSaveFilePicker({ suggestedName: filename });
@@ -152,35 +253,28 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
         if (error.name === "AbortError") throw error;
       }
     }
-    if (!saveHandle && (!expectedSize || expectedSize > MAX_IN_PAGE_DOWNLOAD_BYTES)) {
-      item.stop.remove();
+    const limit = url.startsWith("/api/zip") ? MAX_IN_PAGE_DOWNLOAD_BYTES * 0.8 : MAX_IN_PAGE_DOWNLOAD_BYTES;
+    if (!saveHandle && (!total || total > limit)) {
       item.progress.removeAttribute("value");
-      item.state.textContent = `Downloading ${expectedSize ? formatBytes(expectedSize) : ""} · saving to Downloads folder`;
-      triggerBrowserDownload(url, filename);
+      handOff(`${total ? `${formatBytes(total)} · ` : ""}Handed to the browser's download manager`);
       return;
     }
+
     const response = await fetch(url, { credentials: "same-origin", headers: deviceHeaders(), signal: controller.signal });
     if (!response.ok) throw new Error(await responseError(response));
-    const total = Number(response.headers.get("Content-Length")) || expectedSize || 0;
+    total = Number(response.headers.get("Content-Length")) || total || 0;
     reader = response.body?.getReader();
     if (!reader) throw new Error("This browser cannot stream the download. Try a current browser.");
-
     if (!saveHandle && total > MAX_IN_PAGE_DOWNLOAD_BYTES) {
       await reader.cancel();
-      item.stop.remove();
-      item.progress.removeAttribute("value");
-      item.state.textContent = `Large file (${formatBytes(total)}) passed to browser download manager.`;
-      triggerBrowserDownload(url, filename);
+      handOff(`Large file (${formatBytes(total)}) handed to the browser's download manager`);
       return;
     }
 
     if (saveHandle) writer = await saveHandle.createWritable();
     const chunks = [];
-    let received = 0;
     const startedAt = performance.now();
-    let lastTime = startedAt;
-    let lastBytes = 0;
-    let rate = 0; // smoothed bytes per second
+    let lastTime = startedAt, lastBytes = 0, lastRender = 0;
     item.state.textContent = total ? `Starting · ${formatBytes(total)}` : "Receiving…";
 
     const render = () => {
@@ -194,17 +288,17 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
       }
       if (total) {
         item.progress.max = total;
-        item.progress.value = received;
+        item.progress.value = Math.min(received, total);
       } else {
         item.progress.removeAttribute("value");
       }
       const pct = total ? ` · ${Math.min(100, Math.floor(received / total * 100))}%` : "";
       const speed = rate > 0 ? ` · ${formatBytes(rate)}/s` : "";
-      const eta = total && rate > 0 ? ` · ETA ${formatDuration((total - received) / rate)}` : "";
+      const eta = total && rate > 0 && received < total ? ` · ETA ${formatDuration((total - received) / rate)}` : "";
       item.state.textContent = `${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : " received"}${pct}${speed}${eta}`;
+      tracker.update({ done: received, total, rate });
     };
 
-    let lastRender = 0;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -212,18 +306,13 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
       if (!saveHandle && received > MAX_IN_PAGE_DOWNLOAD_BYTES) {
         await reader.cancel();
         chunks.length = 0;
-        item.stop.remove();
-        item.progress.removeAttribute("value");
-        item.state.textContent = "Large file handed to browser download manager; follow progress there.";
-        triggerBrowserDownload(url, filename);
+        handOff("Large file handed to the browser's download manager; follow progress there.");
         return;
       }
       if (writer) await writer.write(value);
       else chunks.push(value);
-
-      const now = performance.now();
-      if (now - lastRender >= 100) { // throttle DOM updates
-        lastRender = now;
+      if (performance.now() - lastRender >= 100) {
+        lastRender = performance.now();
         render();
       }
     }
@@ -239,23 +328,22 @@ export async function startTrackedDownload(url, filename, expectedSize = 0) {
     }
 
     const seconds = Math.max((performance.now() - startedAt) / 1000, 0.001);
-    item.progress.max = total || Math.max(received, 1);
-    item.progress.value = total || received || 1;
-    item.state.textContent = `Saved · ${formatBytes(received)} in ${formatDuration(seconds)} · avg ${formatBytes(received / seconds)}/s`;
-    item.stop.remove();
-    item.row.classList.add("download-complete");
+    item.progress.max = Math.max(received, 1);
+    item.progress.value = Math.max(received, 1);
+    tracker.update({ done: received, total: received, rate: 0 });
+    settle("complete", `Saved · ${formatBytes(received)} in ${formatDuration(seconds)} · avg ${formatBytes(received / seconds)}/s`);
   } catch (error) {
     try { await reader?.cancel(); } catch (_) {}
     try { await writer?.abort(); } catch (_) {}
-    item.stop.remove();
     if (error.name === "AbortError") {
-      item.state.textContent = "Download cancelled";
-      item.row.classList.add("download-cancelled");
+      settle("cancelled", "Download cancelled");
     } else {
-      item.state.textContent = `Download failed · ${error.message}`;
-      item.row.classList.add("download-failed");
+      settle("failed", `Download failed · ${error.message}`);
+      ctl.setRetry(item.row, () => startTrackedDownload(url, filename, expectedSize));
       showNotice(error.message, "error");
     }
+  } finally {
+    tracker.finish(outcome);
   }
 }
 
@@ -264,6 +352,8 @@ export function renderFileItems() {
   if (!list) return;
   list.replaceChildren();
   list.classList.toggle("grid-view", fileViewMode === "grid");
+  const visible = visibleItems();
+  updateFilterCount(visible.length);
 
   if (currentPath) {
     const parent = currentPath.split("/").slice(0, -1).join("/");
@@ -305,16 +395,16 @@ export function renderFileItems() {
     list.appendChild(li);
   }
 
-  if (!currentItems.length) {
+  if (!visible.length) {
     const empty = document.createElement("li");
     empty.className = "empty-state";
-    empty.textContent = "This folder is empty.";
+    empty.textContent = currentItems.length ? "No items match this filter." : "This folder is empty.";
     list.appendChild(empty);
     updateSelectionUI();
     return;
   }
 
-  currentItems.forEach(item => {
+  visible.forEach(item => {
     const relItemPath = currentPath ? `${currentPath}/${item.name}` : item.name;
     const isSelected = selectedItems.has(relItemPath);
     const ext = getFileExtension(item.name);
@@ -531,12 +621,6 @@ export async function loadHostModalFolders(dirPath) {
 }
 
 export function initExplorerPage() {
-  document.addEventListener("keydown", event => {
-    const modal = document.getElementById("hostModal");
-    if (event.key === "Escape" && modal && !modal.classList.contains("hidden")) {
-      modal.classList.add("hidden");
-    }
-  });
   document.getElementById("viewGridBtn")?.addEventListener("click", () => setFileViewMode("grid"));
   document.getElementById("viewListBtn")?.addEventListener("click", () => setFileViewMode("list"));
 
@@ -548,7 +632,7 @@ export function initExplorerPage() {
 
   document.getElementById("selectAllCheckbox")?.addEventListener("change", event => {
     const checked = event.target.checked;
-    currentItems.forEach(item => {
+    visibleItems().forEach(item => {
       const path = currentPath ? `${currentPath}/${item.name}` : item.name;
       if (checked) selectedItems.set(path, item);
       else selectedItems.delete(path);
@@ -625,5 +709,48 @@ export function initExplorerPage() {
     } catch (error) {
       showNotice(error.message, "error");
     }
+  });
+}
+
+
+export function initExplorerEnhancements() {
+  const search = document.getElementById("fileSearch");
+  let timer = 0;
+  const refilter = () => { pruneSelectionToVisible(); renderFileItems(); updateSelectionUI(); };
+
+  search?.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { filterState.query = search.value; refilter(); }, 120);
+  });
+
+  document.querySelectorAll(".type-chips .chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      filterState.type = chip.dataset.type;
+      document.querySelectorAll(".type-chips .chip").forEach(other => {
+        const on = other === chip;
+        other.classList.toggle("active", on);
+        other.setAttribute("aria-pressed", String(on));
+      });
+      refilter();
+    });
+  });
+
+  document.getElementById("clearSelectionBtn")?.addEventListener("click", clearSelection);
+
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (document.querySelector("dialog[open]")) return;
+    const hostModal = document.getElementById("hostModal");
+    if (hostModal && !hostModal.classList.contains("hidden")) { hostModal.classList.add("hidden"); return; }
+    const preview = document.getElementById("previewModal");
+    if (preview && !preview.classList.contains("hidden")) return; // preview.js owns this Escape
+    if (document.getElementById("hudDrawer")?.classList.contains("hidden") === false) return; // HUD owns this Escape
+    if (search && document.activeElement === search && search.value) {
+      search.value = "";
+      filterState.query = "";
+      refilter();
+      return;
+    }
+    if (selectedItems.size) clearSelection();
   });
 }

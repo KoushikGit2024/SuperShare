@@ -36,6 +36,10 @@ from .api_routes import (
     preview_file_handler,
     zip_folder_handler,
     zip_selected_handler,
+    zip_preflight_handler,
+    download_stop_handler,
+    device_policy_handler,
+    device_terminate_handler,
     network_handler,
     pairing_qr_handler,
     diagnostics_handler,
@@ -213,6 +217,10 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.router.add_get("/api/preview", preview_file_handler)
     app.router.add_get("/api/zip", zip_folder_handler)
     app.router.add_get("/api/zip-selected", zip_selected_handler)
+    app.router.add_get("/api/zip-preflight", zip_preflight_handler)
+    app.router.add_post("/api/devices/policy", device_policy_handler)
+    app.router.add_post("/api/devices/terminate", device_terminate_handler)
+    app.router.add_post("/api/downloads/stop", download_stop_handler)
 
     app.router.add_post("/api/transfers", create_transfer_handler)
     app.router.add_put("/api/transfers/{job_id}/chunk", transfer_chunk_handler)

@@ -1,5 +1,5 @@
 // static/js/pages/send.js
-// Step 2: Choose what to send, file input, folder input, drag & drop, paste, collision handling, progress UI
+// Choose what to send: file/folder input, drag & drop, paste, serialized batches, collision handling, progress UI
 
 import { safeStorage, formatBytes, formatDuration, showNotice, friendlyError, actionDialog, responseError, editText } from "../services/utils.js";
 import { localDeviceId, deviceHeaders, setConnectionState, localDeviceName, setLocalDeviceName } from "../services/device.js";
@@ -7,6 +7,8 @@ import { relPath, filesFromDataTransfer, cancelActiveSession, setActiveUpload, c
 import { currentPath, fetchDirectory } from "./explorer.js";
 import { refreshDevices } from "./devices.js";
 import { navigateTo } from "../services/router.js";
+import { createQueueController } from "../services/queue.js";
+import { trackTransfer } from "../services/hud.js";
 
 export let uploadInProgress = false;
 
@@ -23,251 +25,279 @@ export function sanitizeUploadFiles(rawFiles) {
   return kept;
 }
 
-export async function uploadFiles(files, retryName = null) {
-  if (!files.length) return;
-  navigateTo("sendSection", true);
+const pendingBatches = [];
+let currentAbort = null;
+let queueCtl = null;
+let hideTimer = 0;
 
+const uploadQueue = () => (queueCtl ||= createQueueController(document.getElementById("uploadQueue")));
+
+function addRow(file, relative, base) {
+  const row = document.createElement("li");
+  const fileName = document.createElement("span");
+  fileName.className = "upload-queue-name";
+  fileName.textContent = `${relative} · ${formatBytes(file.size)}`;
+  fileName.title = relative;
+  const state = document.createElement("span");
+  state.className = "upload-queue-state";
+  state.setAttribute("aria-live", "polite");
+  const progress = document.createElement("progress");
+  progress.max = file.size || 1;
+  progress.value = 0;
+  row.append(fileName, state, progress);
+  document.getElementById("uploadQueue").appendChild(row);
+  const entry = { row, state, progress, relative, file, base };
+  setRow(entry, "Queued", "");
+  return entry;
+}
+
+function setRow(entry, text, kind = "") {
+  entry.state.textContent = text;
+  entry.state.className = `upload-queue-state ${kind}`.trim();
+  entry.progress.hidden = ["failed", "cancelled", "skipped"].includes(kind);
+  entry.progress.setAttribute("aria-label", `${entry.relative}: ${text}`);
+  uploadQueue().setState(entry.row, kind === "" || kind === "running" ? "active" : kind);
+}
+
+export function enqueueUpload(files, base = currentPath) {
+  const list = Array.from(files || []);
+  if (!list.length) return;
+  navigateTo("sendSection", true);
+  const entries = list.map(file => addRow(file, relPath(file), base));
+  pendingBatches.push({ entries });
+  if (uploadInProgress) {
+    showNotice(`${list.length} file(s) queued behind the current transfer.`, "info");
+    return;
+  }
+  drain();
+}
+export const uploadFiles = enqueueUpload;
+
+async function drain() {
+  uploadInProgress = true;
+  try {
+    while (pendingBatches.length) await uploadBatch(pendingBatches.shift());
+  } finally {
+    uploadInProgress = false;
+  }
+}
+
+async function uploadOne(entry, destination, signal, ui) {
+  const { file, relative } = entry;
+  const tracker = trackTransfer({ kind: "upload", label: relative });
+  let outcome = "failed";
+  try {
+    const headers = { "Content-Type": "application/json", ...deviceHeaders() };
+    const stamp = `${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
+    const resumeKey = `supershare-transfer:${stamp}`;
+    const resumeId = safeStorage.getItem(resumeKey) || "";
+    let collision = "ask";
+
+    let created = await postCreate({
+      name: file.name, size: file.size, path: destination, resume_id: resumeId, collision
+    }, headers, signal, ui.speed);
+
+    if (created.status === 409) {
+      collision = await actionDialog({
+        title: "Destination file already exists",
+        message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`,
+        actions: [
+          { label: "Cancel", value: "cancel" },
+          { label: "Skip", value: "skip" },
+          { label: "Keep both", value: "rename" },
+          { label: "Replace after verify", value: "replace", primary: true }
+        ]
+      }) || "cancel";
+      if (collision === "cancel") {
+        setRow(entry, "Cancelled", "cancelled");
+        outcome = "cancelled";
+        return "cancelled";
+      }
+      created = await postCreate({ name: file.name, size: file.size, path: destination, collision },
+        headers, signal, ui.speed);
+    }
+    if (!created.ok) {
+      throw Object.assign(new Error(await responseError(created)), { status: created.status });
+    }
+
+    const session = await created.json();
+    if (session.status === "skipped") {
+      setRow(entry, "Skipped", "skipped");
+      outcome = "skipped";
+      return "skipped";
+    }
+    if (session.status === "completed") {
+      safeStorage.removeItem(resumeKey);
+      entry.progress.value = entry.progress.max;
+      setRow(entry, "Completed", "complete");
+      outcome = "complete";
+      return "complete";
+    }
+
+    safeStorage.setItem(resumeKey, session.id);
+    safeStorage.setItem(`supershare-transfer-time:${stamp}`, String(Date.now()));
+    setActiveUpload(session.id, resumeKey);
+
+    const chunkSize = session.chunk_size || (4 * 1024 * 1024);
+    let uploadedBytes = session.offset || 0;
+    entry.progress.value = Math.min(uploadedBytes, file.size || 1);
+    setRow(entry, "Transferring", "running");
+
+    const offsets = [];
+    for (let pos = uploadedBytes; pos < file.size; pos += chunkSize) offsets.push(pos);
+
+    let lastT = Date.now(), lastB = uploadedBytes, ema = 0;
+    const render = () => {
+      const now = Date.now();
+      if (now - lastT >= 1000) {
+        const inst = Math.max(0, uploadedBytes - lastB) / ((now - lastT) / 1000);
+        ema = ema ? ema * 0.7 + inst * 0.3 : inst;
+        lastT = now;
+        lastB = uploadedBytes;
+      }
+      const pct = file.size ? Math.min(100, Math.round(uploadedBytes / file.size * 100)) : 100;
+      const eta = ema > 0 ? ` · ETA ${formatDuration((file.size - uploadedBytes) / ema)}` : "";
+      ui.progress(pct);
+      entry.progress.value = Math.min(uploadedBytes, file.size || 1);
+      ui.speed(`${formatBytes(uploadedBytes)} / ${formatBytes(file.size)} · ${formatBytes(ema)}/s${eta}`);
+      entry.state.textContent = `${pct}% · ${formatBytes(ema)}/s${eta}`;
+      tracker.update({ done: uploadedBytes, total: file.size, rate: ema });
+    };
+
+    await sendChunks({
+      session, file, offsets, chunkSize, signal,
+      onBytes: d => { uploadedBytes += d; render(); },
+      onStatus: ui.speed
+    });
+
+    ui.name(`Verifying ${file.name}`);
+    setRow(entry, "Verifying", "running");
+    ui.speed("Verifying chunks and final file checksum");
+
+    let completed = await finishTransfer(session, headers, signal, (verified, total) => {
+      ui.speed(`Verifying ${formatBytes(verified)} of ${formatBytes(total)}`);
+    });
+    for (let pass = 0; completed.error === "chunks_corrupt" && pass < 3; pass++) {
+      showNotice(`Repairing ${completed.bad_offsets.length} damaged chunk(s)...`, "info");
+      await sendChunks({
+        session, file, offsets: completed.bad_offsets, chunkSize, signal,
+        onBytes: () => {}, onStatus: ui.speed
+      });
+      completed = await finishTransfer(session, headers, signal);
+    }
+    if (completed.error) {
+      throw new Error("The laptop could not verify this file after re-sending damaged chunks.");
+    }
+
+    safeStorage.removeItem(resumeKey);
+    entry.progress.value = entry.progress.max;
+    setRow(entry, "Completed", "complete");
+    outcome = "complete";
+    return "complete";
+  } catch (error) {
+    outcome = error.name === "AbortError" ? "cancelled" : "failed";
+    throw error;
+  } finally {
+    clearActiveUpload();
+    tracker.finish(outcome);
+  }
+}
+
+async function uploadBatch({ entries }) {
   const box = document.getElementById("progressContainer");
   const name = document.getElementById("uploadFileName");
   const bar = document.getElementById("uploadBarFill");
   const percent = document.getElementById("uploadPercent");
   const speed = document.getElementById("uploadSpeed");
-  const queue = document.getElementById("uploadQueue");
   const cancelBtn = document.getElementById("cancelUploadBtn");
+  const indicator = document.querySelector(".running-indicator");
+  const ui = {
+    name: text => { if (name) name.textContent = text; },
+    speed: text => { if (speed) speed.textContent = text; },
+    progress: pct => { if (bar) bar.style.width = `${pct}%`; if (percent) percent.textContent = `${pct}%`; }
+  };
 
+  clearTimeout(hideTimer);
   box?.classList.remove("hidden");
   cancelBtn?.classList.remove("hidden");
-  document.querySelector(".running-indicator")?.classList.remove("complete", "failed");
-
-  uploadInProgress = true;
-  const uploadAbort = new AbortController();
-  if (cancelBtn) {
-    cancelBtn.onclick = () => {
-      uploadAbort.abort();
-      cancelActiveSession();
-    };
-  }
+  indicator?.classList.remove("complete", "failed");
+  currentAbort = new AbortController();
+  const signal = currentAbort.signal;
 
   let wakeLock = null;
-  try {
-    wakeLock = await navigator.wakeLock?.request("screen");
-  } catch (_) {}
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
 
-  let skippedFiles = 0;
-  const failedFiles = [];
-
-  setConnectionState(`Sending ${files.length} file${files.length === 1 ? "" : "s"}`, "online");
-  queue?.replaceChildren();
-  queue?.classList.remove("hidden");
-
-  const queueEntries = Array.from(files, (file, index) => {
-    const relative = retryName || relPath(file);
-    const row = document.createElement("li");
-    const fileName = document.createElement("span");
-    fileName.className = "upload-queue-name";
-    fileName.textContent = `${index + 1}. ${relative} · ${formatBytes(file.size)}`;
-    const state = document.createElement("span");
-    state.className = "upload-queue-state";
-    state.textContent = "Queued";
-    state.setAttribute("aria-live", "polite");
-    const progress = document.createElement("progress");
-    progress.max = file.size || 1;
-    progress.value = 0;
-    progress.setAttribute("aria-label", `${relative}: queued`);
-    row.append(fileName, state, progress);
-    queue?.appendChild(row);
-    return { state, progress, relative };
-  });
+  let skipped = 0, cancelled = 0;
+  const failed = [];
+  setConnectionState(`Sending ${entries.length} file${entries.length === 1 ? "" : "s"}`, "online");
 
   try {
-    for (let index = 0; index < files.length; index++) {
-      uploadAbort.signal.throwIfAborted();
-      const file = files[index];
-      const relative = retryName || relPath(file);
-      const destination = retryName ? retryName : (currentPath ? `${currentPath}/${relative}` : relative);
-      const queueEntry = queueEntries[index];
-
-      queueEntry.state.textContent = "Preparing";
-      queueEntry.state.className = "upload-queue-state running";
-      if (name) name.textContent = `Uploading ${index + 1} of ${files.length}: ${relative}`;
-      if (bar) bar.style.width = "0%";
-      if (percent) percent.textContent = "0%";
-      if (speed) speed.textContent = "Starting";
-
-      try {
-        await new Promise((resolve, reject) => {
-          (async () => {
-            const start = Date.now();
-            const headers = { "Content-Type": "application/json", ...deviceHeaders() };
-            const resumeKey = `supershare-transfer:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
-            const resumeId = safeStorage.getItem(resumeKey) || "";
-            let collision = "ask";
-
-            let created = await postCreate({
-              name: file.name, size: file.size, path: destination, resume_id: resumeId, collision
-            }, headers, uploadAbort.signal, t => { if (speed) speed.textContent = t; });
-
-            if (created.status === 409) {
-              collision = await actionDialog({
-                title: "Destination file already exists",
-                message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`,
-                actions: [
-                  { label: "Cancel", value: "cancel" },
-                  { label: "Skip", value: "skip" },
-                  { label: "Keep both", value: "rename" },
-                  { label: "Replace after verify", value: "replace", primary: true }
-                ]
-              }) || "cancel";
-
-              if (collision === "cancel") {
-                skippedFiles++;
-                queueEntry.state.textContent = "Cancelled";
-                queueEntry.state.className = "upload-queue-state";
-                resolve();
-                return;
-              }
-              created = await postCreate({
-                name: file.name, size: file.size, path: destination, collision
-              }, headers, uploadAbort.signal, t => { if (speed) speed.textContent = t; });
-            }
-
-            if (!created.ok) {
-              throw Object.assign(new Error(await responseError(created)), { status: created.status });
-            }
-
-            const session = await created.json();
-            if (session.status === "skipped") {
-              skippedFiles++;
-              queueEntry.state.textContent = "Skipped";
-              queueEntry.state.className = "upload-queue-state";
-              resolve();
-              return;
-            }
-            if (session.status === "completed") {
-              safeStorage.removeItem(resumeKey);
-              queueEntry.state.textContent = "Completed";
-              queueEntry.state.className = "upload-queue-state complete";
-              queueEntry.progress.value = queueEntry.progress.max;
-              resolve();
-              return;
-            }
-
-            safeStorage.setItem(resumeKey, session.id);
-            safeStorage.setItem(`supershare-transfer-time:${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`, String(Date.now()));
-            setActiveUpload(session.id, resumeKey);
-
-            let offset = session.offset || 0;
-            const chunkSize = session.chunk_size || (4 * 1024 * 1024);
-            let uploadedBytes = offset;
-
-            queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
-            queueEntry.state.textContent = "Transferring";
-
-            const chunkOffsets = [];
-            for (let pos = offset; pos < file.size; pos += chunkSize) {
-              chunkOffsets.push(pos);
-            }
-
-            let lastT = start, lastB = uploadedBytes, ema = 0;
-            const render = () => {
-              const now = Date.now();
-              if (now - lastT >= 1000) {
-                const inst = Math.max(0, uploadedBytes - lastB) / ((now - lastT) / 1000);
-                ema = ema ? ema * 0.7 + inst * 0.3 : inst;
-                lastT = now;
-                lastB = uploadedBytes;
-              }
-              const pct = file.size ? Math.min(100, Math.round(uploadedBytes / file.size * 100)) : 100;
-              const rate = ema;
-              const eta = rate > 0 ? ` · ETA ${formatDuration((file.size - uploadedBytes) / rate)}` : "";
-              if (bar) bar.style.width = `${pct}%`;
-              if (percent) percent.textContent = `${pct}%`;
-              queueEntry.progress.value = Math.min(uploadedBytes, file.size || 1);
-              if (speed) speed.textContent = `${formatBytes(uploadedBytes)} / ${formatBytes(file.size)} · ${formatBytes(rate)}/s${eta}`;
-              queueEntry.state.textContent = `${pct}% · ${formatBytes(rate)}/s${eta}`;
-            };
-
-            await sendChunks({
-              session, file, offsets: chunkOffsets, chunkSize, signal: uploadAbort.signal,
-              onBytes: d => { uploadedBytes += d; render(); },
-              onStatus: s => { if (speed) speed.textContent = s; }
-            });
-
-            if (name) name.textContent = `Verifying ${file.name}`;
-            queueEntry.state.textContent = "Verifying";
-            if (speed) speed.textContent = "Verifying chunks and final file checksum";
-
-            let completed = await finishTransfer(session, headers, uploadAbort.signal, (verified, total) => {
-              if (speed) speed.textContent = `Verifying ${formatBytes(verified)} of ${formatBytes(total)}`;
-            });
-
-            for (let pass = 0; completed.error === "chunks_corrupt" && pass < 3; pass++) {
-              showNotice(`Repairing ${completed.bad_offsets.length} damaged chunk(s)...`, "info");
-              await sendChunks({
-                session, file, offsets: completed.bad_offsets, chunkSize, signal: uploadAbort.signal,
-                onBytes: () => {}, onStatus: s => { if (speed) speed.textContent = s; }
-              });
-              completed = await finishTransfer(session, headers, uploadAbort.signal);
-            }
-
-            if (completed.error) {
-              throw new Error("The laptop could not verify this file after re-sending damaged chunks.");
-            }
-
-            safeStorage.removeItem(resumeKey);
-            queueEntry.state.textContent = "Completed";
-            queueEntry.state.className = "upload-queue-state complete";
-            queueEntry.progress.value = queueEntry.progress.max;
-            resolve();
-          })().catch(reject);
-        });
-        clearActiveUpload();
-      } catch (fileErr) {
-        clearActiveUpload();
-        if (fileErr.name === "AbortError") throw fileErr;
-        failedFiles.push(relative);
-        queueEntry.state.textContent = `Failed · ${friendlyError(fileErr)}`;
-        queueEntry.state.className = "upload-queue-state failed";
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (signal.aborted) {
+        setRow(entry, "Not started · cancelled", "cancelled");
+        cancelled++;
         continue;
+      }
+      const destination = entry.base ? `${entry.base}/${entry.relative}` : entry.relative;
+      ui.name(`Uploading ${i + 1} of ${entries.length}: ${entry.relative}`);
+      ui.progress(0);
+      ui.speed("Starting");
+      setRow(entry, "Preparing", "running");
+      try {
+        const result = await uploadOne(entry, destination, signal, ui);
+        if (result === "skipped") skipped++;
+        else if (result === "cancelled") cancelled++;
+      } catch (error) {
+        if (error.name === "AbortError") {
+          setRow(entry, "Cancelled", "cancelled");
+          cancelled++;
+        } else {
+          failed.push(entry);
+          setRow(entry, `Failed · ${friendlyError(error)}`, "failed");
+          uploadQueue().setRetry(entry.row, () => enqueueUpload([entry.file], entry.base));
+        }
       }
     }
 
-    const successCount = files.length - skippedFiles - failedFiles.length;
-    if (name) name.textContent = `Completed ${successCount}; skipped ${skippedFiles}; failed ${failedFiles.length}`;
-    if (percent) percent.textContent = "100%";
-    if (bar) bar.style.width = "100%";
-    document.querySelector(".running-indicator")?.classList.add(failedFiles.length ? "failed" : "complete");
-    setConnectionState("Batch transfer finished", "online");
-    showNotice(`Sent ${successCount}; skipped ${skippedFiles}; failed ${failedFiles.length}.`, failedFiles.length ? "error" : "success");
-    fetchDirectory(currentPath);
-    refreshDevices();
-  } catch (err) {
-    if (name) name.textContent = err.name === "AbortError" ? "Transfer cancelled" : "Transfer failed";
-    queueEntries.forEach(entry => {
-      if (entry.state.textContent === "Queued") entry.state.textContent = "Not started · cancelled/aborted";
-    });
-    document.querySelector(".running-indicator")?.classList.add("failed");
-    setConnectionState(friendlyError(err), "error");
-    showNotice(friendlyError(err), "error");
+    const ok = entries.length - skipped - cancelled - failed.length;
+    ui.name(signal.aborted ? "Transfer cancelled" : `Completed ${ok}; skipped ${skipped}; failed ${failed.length}`);
+    if (!signal.aborted) ui.progress(100);
+    indicator?.classList.add(failed.length || signal.aborted ? "failed" : "complete");
+    setConnectionState(signal.aborted ? "Transfer cancelled" : "Batch transfer finished", "online");
+    showNotice(`Sent ${ok}; skipped ${skipped}; cancelled ${cancelled}; failed ${failed.length}.`,
+      failed.length ? "error" : "success");
+    fetchDirectory(currentPath).catch(() => {});
     refreshDevices();
   } finally {
-    wakeLock?.release();
-    if (cancelBtn) cancelBtn.classList.add("hidden");
-    uploadInProgress = false;
+    try { await wakeLock?.release(); } catch (_) {}
+    cancelBtn?.classList.add("hidden");
+    currentAbort = null;
+    if (!failed.length && !pendingBatches.length) {
+      hideTimer = setTimeout(() => box?.classList.add("hidden"), 6000);
+    }
   }
 }
 
 export function initSendPage() {
+  uploadQueue();
+
+  document.getElementById("cancelUploadBtn")?.addEventListener("click", () => {
+    pendingBatches.splice(0).forEach(batch =>
+      batch.entries.forEach(entry => setRow(entry, "Cancelled before it started", "cancelled")));
+    currentAbort?.abort();
+    cancelActiveSession();
+  });
+
   document.getElementById("fileInput")?.addEventListener("change", event => {
     const files = sanitizeUploadFiles(event.target.files);
     event.target.value = "";
-    if (files.length) uploadFiles(files);
+    if (files.length) enqueueUpload(files);
   });
-
   document.getElementById("folderInput")?.addEventListener("change", event => {
     const files = sanitizeUploadFiles(event.target.files);
     event.target.value = "";
-    if (files.length) uploadFiles(files);
+    if (files.length) enqueueUpload(files);
   });
 
   const dropZone = document.getElementById("dropZone");
@@ -281,13 +311,14 @@ export function initSendPage() {
       event.preventDefault();
       dropZone.classList.remove("drag-active");
       const files = sanitizeUploadFiles(await filesFromDataTransfer(event.dataTransfer));
-      if (files.length) uploadFiles(files);
+      if (files.length) enqueueUpload(files);
     });
   }
 
   document.addEventListener("paste", event => {
+    if (event.target?.closest?.("input, textarea")) return;
     const files = sanitizeUploadFiles(event.clipboardData?.files);
-    if (files.length) uploadFiles(files);
+    if (files.length) enqueueUpload(files);
   });
 
   document.getElementById("nameBrowserBtn")?.addEventListener("click", async () => {
@@ -297,4 +328,3 @@ export function initSendPage() {
     refreshDevices();
   });
 }
-

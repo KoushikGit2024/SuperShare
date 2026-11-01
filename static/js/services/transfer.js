@@ -176,6 +176,11 @@ export async function sendChunks({ session, file, offsets, chunkSize, signal, on
           } catch (e) {
             onBytes(-sent);
             sent = 0;
+            if (e.status === 423 && e.name !== "AbortError") {
+              onStatus("Paused by the host. Waiting for it to resume…");
+              await sleep(3000, inner.signal);
+              continue;
+            }
             if (e.name === "AbortError" || !isRetryable(e) || ++failures > (e.network ? 60 : 8)) throw e;
             if (e.network) {
               onStatus("Connection lost. Waiting for the laptop…");

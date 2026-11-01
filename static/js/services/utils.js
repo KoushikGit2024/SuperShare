@@ -46,10 +46,19 @@ export function icon(name, className = "icon") {
 export function showNotice(message, type = "info") {
   const notice = document.getElementById("notice");
   if (!notice) return;
-  notice.textContent = message;
   notice.className = `notice ${type}`;
+  const text = document.createElement("span");
+  text.className = "notice-text";
+  text.textContent = message;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "notice-close";
+  close.setAttribute("aria-label", "Dismiss message");
+  close.textContent = "×";
+  close.onclick = () => { clearTimeout(showNotice.timer); notice.classList.add("hidden"); };
+  notice.replaceChildren(text, close);
   clearTimeout(showNotice.timer);
-  showNotice.timer = setTimeout(() => notice.classList.add("hidden"), 5000);
+  showNotice.timer = setTimeout(() => notice.classList.add("hidden"), type === "error" ? 12000 : 5000);
 }
 
 export function actionDialog({ title, message, inputLabel = "", inputValue = "", actions = [] }) {

@@ -248,32 +248,37 @@ def clear_transfers_history():
     return True
 
 
-def clear_temp_partials():
+def clear_temp_partials(min_age_seconds=0):
+    now = time.time()
     with STATE["lock"]:
         share_dir = STATE["share_dir"]
-        live = {
-            os.path.realpath(j.get("part_path", ""))
-            for j in STATE.get("transfer_jobs", {}).values()
-            if j.get("status") in ACTIVE_SLOT_STATES
-        }
-    removed = 0
-    reclaimed = 0
+        jobs = list(STATE.get("transfer_jobs", {}).values())
+        live = {os.path.realpath(j.get("part_path", "")) for j in jobs if j.get("status") in ACTIVE_SLOT_STATES}
+        by_part = {os.path.realpath(j["part_path"]): j for j in jobs if j.get("part_path")}
+    removed = reclaimed = 0
     for root, _, files in os.walk(share_dir):
-        for f in files:
-            if f.startswith(".supershare-") and f.endswith(".partial"):
-                p = os.path.join(root, f)
-                if os.path.realpath(p) in live:
+        for name in files:
+            if not (name.startswith(".supershare-") and name.endswith(".partial")):
+                continue
+            path = os.path.join(root, name)
+            real = os.path.realpath(path)
+            if real in live:
+                continue
+            try:
+                st = os.stat(path)
+                if now - st.st_mtime < min_age_seconds:
                     continue
-                try:
-                    sz = os.path.getsize(p)
-                    os.remove(p)
-                    removed += 1
-                    reclaimed += sz
-                except OSError:
-                    pass
-    with STATE["lock"]:
-        for jid in [k for k, j in STATE.get("transfer_jobs", {}).items() if j.get("status") not in ACTIVE_SLOT_STATES]:
-            STATE["transfer_jobs"].pop(jid, None)
+                os.remove(path)
+            except OSError:
+                continue
+            removed += 1
+            reclaimed += st.st_size
+            job = by_part.get(real)
+            if job:
+                with STATE["lock"]:
+                    job["status"] = "cancelled"
+                    job["error"] = "Unfinished upload was cleaned up by the host"
+                    job["updated_at"] = int(now)
     request_save()
     return {"removed": removed, "reclaimed_bytes": reclaimed}
 

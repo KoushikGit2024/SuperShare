@@ -1,8 +1,6 @@
 // static/js/pages/devices.js
-// Access Control & Connected Devices listing, rename, forget, and status indicators
-
 import { showNotice, responseError, editText, confirmAction, icon, listBusy, formatBytes } from "../services/utils.js";
-import { localDeviceId, deviceHeaders } from "../services/device.js";
+import { localDeviceId, deviceHeaders, setConnectionState } from "../services/device.js";
 
 export async function deviceAction(url, body) {
   try {
@@ -20,21 +18,159 @@ export async function deviceAction(url, body) {
   }
 }
 
+const ACTIVE_STATES = ["queued", "transferring", "interrupted", "verifying"];
+const ACCESS_OPTIONS = [["read-write", "Read + Send"], ["read-only", "Read only"], ["blocked", "Blocked"]];
+const LIMIT_OPTIONS = [[0, "No limit"], [512, "512 KB/s"], [1024, "1 MB/s"], [5120, "5 MB/s"], [20480, "20 MB/s"]];
+
+function platformInfo(type) {
+  const t = String(type || "");
+  if (/iPad/i.test(t)) return { label: "iPadOS", icon: "tablet" };
+  if (/iOS|iPhone/i.test(t)) return { label: "iOS", icon: "device-mobile" };
+  if (/Android/i.test(t)) return { label: "Android", icon: "device-mobile" };
+  if (/Mac/i.test(t)) return { label: "macOS", icon: "laptop" };
+  if (/Linux|CrOS|Chrome OS/i.test(t)) return { label: "Linux", icon: "monitor" };
+  if (/Win/i.test(t)) return { label: "Windows", icon: "monitor" };
+  return { label: "Browser", icon: "monitor" };
+}
+
+function pill(text, className = "", iconName = "") {
+  const el = document.createElement("span");
+  el.className = `device-pill ${className}`.trim();
+  if (iconName) el.appendChild(icon(iconName));
+  el.append(document.createTextNode(iconName ? ` ${text}` : text));
+  return el;
+}
+
+function selectControl(label, options, value, onChange) {
+  const wrap = document.createElement("label");
+  wrap.className = "device-select";
+  const text = document.createElement("span");
+  text.textContent = label;
+  const select = document.createElement("select");
+  options.forEach(([val, name]) => {
+    const option = document.createElement("option");
+    option.value = String(val);
+    option.textContent = name;
+    select.appendChild(option);
+  });
+  select.value = String(value);
+  select.onchange = () => onChange(select.value);
+  wrap.append(text, select);
+  return wrap;
+}
+
+function smallButton(text, handler, className = "btn-xs outline") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className;
+  button.textContent = text;
+  button.onclick = handler;
+  return button;
+}
+
+function buildDeviceRow(device, host) {
+  const isSelf = device.id === localDeviceId;
+  const platform = platformInfo(device.type);
+  const li = document.createElement("li");
+  li.className = "device-row";
+  li.dataset.deviceId = device.id;
+
+  const main = document.createElement("div");
+  main.className = "device-main";
+  const avatar = document.createElement("span");
+  avatar.className = "device-avatar";
+  avatar.appendChild(icon(platform.icon));
+  const info = document.createElement("div");
+  info.className = "device-info";
+  const title = document.createElement("strong");
+  title.textContent = device.name + (isSelf ? " (this device)" : "");
+
+  const pills = document.createElement("div");
+  pills.className = "device-pills";
+  pills.append(pill(platform.label, "platform", platform.icon));
+  if (device.ip) pills.append(pill(device.ip, "ip"));
+  if (device.connection) pills.append(pill(device.connection, "connection", "route"));
+  pills.append(pill(device.access === "blocked" ? "Blocked" : device.access === "read-only" ? "Read only" : "Read + Send",
+    `access ${device.access}`));
+  if (device.paused) pills.append(pill("Paused", "paused"));
+  if (device.limit_kbps) pills.append(pill(`Limit ${formatBytes(device.limit_kbps * 1024)}/s`, "limit"));
+  if (device.active_transfers) pills.append(pill(`${device.active_transfers} active`, "active"));
+
+  const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - device.last_seen));
+  const seenText = elapsed < 60 ? `${elapsed}s ago` : elapsed < 3600 ? `${Math.floor(elapsed / 60)}m ago`
+    : new Date(device.last_seen * 1000).toLocaleString();
+  const meta = document.createElement("span");
+  meta.textContent = `${device.type} · last seen ${seenText}`;
+  const identity = document.createElement("code");
+  identity.className = "device-identity";
+  identity.textContent = `Browser profile ID · ${String(device.id).slice(0, 8)}`;
+  identity.title = String(device.id);
+  info.append(title, pills, meta, identity);
+  main.append(avatar, info);
+
+  const state = document.createElement("span");
+  state.className = `device-state ${device.online ? "online" : "offline"}`;
+  state.textContent = device.online ? "Online" : "Offline";
+  li.append(main, state);
+
+  const controls = document.createElement("div");
+  controls.className = "device-controls";
+  const refresh = ok => { if (ok) refreshDevices(); };
+
+  controls.appendChild(smallButton("Rename", async () => {
+    const name = await editText("Name device", "Give this device a recognizable name:", "Display name", device.name);
+    if (name) refresh(await deviceAction("/api/devices/rename", { id: device.id, name }));
+  }));
+
+  if (host && !isSelf) {
+    controls.append(
+      selectControl("Access", ACCESS_OPTIONS, device.access, async value =>
+        refresh(await deviceAction("/api/devices/policy", { id: device.id, access: value }))),
+      selectControl("Speed", LIMIT_OPTIONS, device.limit_kbps, async value =>
+        refresh(await deviceAction("/api/devices/policy", { id: device.id, limit_kbps: Number(value) }))),
+      smallButton(device.paused ? "Resume" : "Pause", async () =>
+        refresh(await deviceAction("/api/devices/policy", { id: device.id, paused: !device.paused })))
+    );
+    if (device.active_transfers) {
+      controls.appendChild(smallButton("Stop transfers", async () => {
+        if (await confirmAction("Stop transfers?", `Cancel every active upload from ${device.name} and delete its partial files?`, true)) {
+          refresh(await deviceAction("/api/devices/terminate", { id: device.id }));
+        }
+      }));
+    }
+    controls.appendChild(smallButton("Kick", async () => {
+      if (await confirmAction("Kick this browser?", `${device.name} will be blocked and its active uploads cancelled. You can unblock it from the Access menu.`, true)) {
+        refresh(await deviceAction("/api/devices/policy", { id: device.id, access: "blocked" }));
+      }
+    }, "btn-xs outline"));
+    controls.appendChild(smallButton("Remove", async () => {
+      if (await confirmAction("Remove device?", `Remove ${device.name} from the devices list?`, true)) {
+        refresh(await deviceAction("/api/devices/forget", { id: device.id }));
+      }
+    }));
+  }
+  li.append(controls);
+  return li;
+}
+
 export async function refreshDevices() {
   try {
     const response = await fetch("/api/status", { headers: deviceHeaders() });
     if (!response.ok) throw new Error(await responseError(response));
     const data = await response.json();
+    const host = Boolean(data.host_dashboard);
+    window._isHostDashboard = host;
 
-    document.getElementById("openDriveBrowserBtn")?.classList.toggle("hidden", !data.host_dashboard);
-    document.getElementById("nativePickerBtn")?.classList.toggle("hidden", !data.host_dashboard);
-    document.getElementById("showPairQrBtn")?.classList.toggle("hidden", !data.host_dashboard);
-    document.getElementById("deleteSelectedBtn")?.classList.toggle("hidden", !data.host_dashboard);
-    document.getElementById("quickQrBtn")?.classList.toggle("hidden", !data.host_dashboard);
-    document.getElementById("tab-storage-mgr")?.classList.toggle("hidden", !data.host_dashboard);
+    document.getElementById("openDriveBrowserBtn")?.classList.toggle("hidden", !host);
+    document.getElementById("nativePickerBtn")?.classList.toggle("hidden", !host);
+    document.getElementById("showPairQrBtn")?.classList.toggle("hidden", !host);
+    document.getElementById("deleteSelectedBtn")?.classList.toggle("hidden", !host);
+    document.getElementById("quickQrBtn")?.classList.toggle("hidden", !host);
+    document.getElementById("tab-storage-mgr")?.classList.toggle("hidden", !host);
 
     document.getElementById("destinationName").textContent = data.host_name || "This host";
     window._shareRoot = data.share_root || "";
+    if (!host && data.access === "blocked") setConnectionState("Blocked by the host", "error");
 
     const devices = data.devices || [];
     window._lastDevices = devices;
@@ -47,73 +183,16 @@ export async function refreshDevices() {
       if (!devices.length) {
         const empty = document.createElement("li");
         empty.className = "empty-state";
-        empty.textContent = data.host_dashboard
+        empty.textContent = host
           ? "Waiting for browser profiles to connect…"
           : "Browser profile status is managed from the laptop dashboard.";
         list.appendChild(empty);
       }
-      devices.forEach(device => {
-        const li = document.createElement("li");
-        li.className = "device-row";
-        const main = document.createElement("div");
-        main.className = "device-main";
-        const avatar = document.createElement("span");
-        avatar.className = "device-avatar";
-        avatar.appendChild(icon(/Android|iOS|iPhone|iPad/i.test(device.type) ? "device-mobile" : "monitor"));
-        const info = document.createElement("div");
-        info.className = "device-info";
-        const title = document.createElement("strong");
-        title.textContent = device.name + (device.id === localDeviceId ? " (this device)" : "");
-        const seenAt = new Date(device.last_seen * 1000);
-        const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - device.last_seen));
-        const seenText = elapsed < 60 ? `${elapsed}s ago` : elapsed < 3600 ? `${Math.floor(elapsed / 60)}m ago` : seenAt.toLocaleString();
-        const meta = document.createElement("span");
-        meta.textContent = `${device.type} · ${device.ip || "local network"} · last seen ${seenText}`;
-        const identity = document.createElement("code");
-        identity.className = "device-identity";
-        identity.textContent = `Browser profile ID · ${String(device.id).slice(0, 8)}`;
-        identity.title = String(device.id);
-        const approval = document.createElement("span");
-        approval.textContent = "Always allowed · Full access";
-        info.append(title, meta, identity, approval);
-        main.append(avatar, info);
-
-        const state = document.createElement("span");
-        state.className = `device-state ${device.online ? "online" : "offline"}`;
-        state.textContent = `${device.online ? "Online" : "Offline"} · Ready to Share · Read + Send`;
-        li.append(main, state);
-
-        const controls = document.createElement("div");
-        controls.className = "device-controls";
-        const rename = document.createElement("button");
-        rename.className = "btn-xs outline";
-        rename.textContent = "Rename";
-        rename.onclick = async () => {
-          const name = await editText("Name device", "Give this device a recognizable name:", "Display name", device.name);
-          if (!name) return;
-          const ok = await deviceAction("/api/devices/rename", { id: device.id, name });
-          if (ok) refreshDevices();
-        };
-        controls.appendChild(rename);
-        if (device.id !== localDeviceId) {
-          const forget = document.createElement("button");
-          forget.className = "btn-xs outline";
-          forget.textContent = "Remove";
-          forget.onclick = async () => {
-            if (await confirmAction("Remove device?", `Remove ${device.name} from the devices list?`, true)
-                && await deviceAction("/api/devices/forget", { id: device.id })) {
-              refreshDevices();
-            }
-          };
-          controls.appendChild(forget);
-        }
-        li.append(controls);
-        list.appendChild(li);
-      });
+      devices.forEach(device => list.appendChild(buildDeviceRow(device, host)));
     }
 
-    window._lastTransfers = data.transfers || [];
-    renderTransfers(window._lastTransfers, data.host_dashboard);
+    window._lastTransfers = host ? (data.transfers || []) : (data.my_transfers || []);
+    renderTransfers(window._lastTransfers, host);
     syncTabIndicators();
   } catch (_) {
     // Host offline
@@ -150,60 +229,114 @@ export function renderThroughput(transfers) {
   if (peakEl) peakEl.textContent = peak ? `Peak ${formatBytes(peak)}/min` : "No completed transfers yet";
 }
 
+let deviceFilterSignature = "";
+function syncDeviceFilter(host) {
+  const select = document.getElementById("transferDevice");
+  if (!select) return;
+  select.closest("label")?.classList.toggle("hidden", !host);
+  if (!host) return;
+  const devices = window._lastDevices || [];
+  const signature = devices.map(d => `${d.id}:${d.name}`).join("|");
+  if (signature === deviceFilterSignature) return;
+  deviceFilterSignature = signature;
+  const previous = select.value || "all";
+  select.replaceChildren(new Option("All devices", "all"));
+  devices.forEach(d => select.appendChild(new Option(d.name, d.id)));
+  select.value = devices.some(d => d.id === previous) ? previous : "all";
+}
+
+function transferRow(t, host, names) {
+  const active = ACTIVE_STATES.includes(t.status);
+  const who = names.get(t.device_id) || "Unknown device";
+  const outgoing = t.direction === "send";
+  const verb = outgoing
+    ? (active ? (host ? `Sending to ${who}` : "Downloading") : (host ? `Sent to ${who}` : "Downloaded"))
+    : active ? (host ? `Receiving from ${who}` : "Uploading")
+      : (host ? `Received from ${who}` : "Uploaded");
+
+  const li = document.createElement("li");
+  li.className = "transfer-row";
+  const info = document.createElement("div");
+  info.className = "transfer-info";
+  const name = document.createElement("strong");
+  name.textContent = t.filename || "Unknown file";
+  const meta = document.createElement("span");
+  const timeStr = t.timestamp ? new Date(t.timestamp * 1000).toLocaleTimeString() : "";
+  meta.textContent = `${verb} · ${timeStr} · ${t.detail || t.status}`;
+  info.append(name, meta);
+  if (active && t.size) {
+    const pct = Math.round(Math.min(t.offset || 0, t.size) / t.size * 100);
+    const progress = document.createElement("progress");
+    progress.className = "transfer-progress";
+    progress.max = t.size;
+    progress.value = Math.min(t.offset || 0, t.size);
+    progress.setAttribute("aria-label", `${t.filename}: ${pct}% received`);
+    info.appendChild(progress);
+  }
+
+  const side = document.createElement("span");
+  side.className = "transfer-side";
+  const st = document.createElement("span");
+  st.className = `transfer-state ${t.status}`;
+  st.textContent = t.status;
+  side.appendChild(st);
+  if (active && t.id && (!outgoing || host)) {
+    side.appendChild(smallButton("Stop", async () => {
+      try {
+        const res = outgoing
+          ? await fetch("/api/downloads/stop", { method: "POST", headers: { "Content-Type": "application/json", ...deviceHeaders() },
+              credentials: "same-origin", body: JSON.stringify({ id: t.id }) })
+          : await fetch(`/api/transfers/${t.id}/cancel`, { method: "POST", headers: deviceHeaders(), credentials: "same-origin" });
+        if (!res.ok) throw new Error(await responseError(res));
+        refreshDevices();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }));
+  }
+  li.append(info, side);
+  return li;
+}
+
 export function renderTransfers(transfers, hostDashboard) {
   const list = document.getElementById("transferList");
   if (!list || listBusy(list)) return;
   list.replaceChildren();
 
-  if (!hostDashboard) {
-    list.innerHTML = '<li class="empty-state">Transfer activity logs are available on the laptop dashboard.</li>';
-    return;
-  }
-  renderThroughput(transfers);
+  const titleText = document.getElementById("activityTitleText");
+  if (titleText) titleText.textContent = hostDashboard ? "Activity" : "My transfers";
+  document.getElementById("throughputPanel")?.classList.toggle("hidden", !hostDashboard);
+  syncDeviceFilter(hostDashboard);
+  if (hostDashboard) renderThroughput(transfers);
 
-  const filter = document.getElementById("transferFilter")?.value || "all";
-  const activeStates = ["queued", "transferring", "interrupted", "verifying"];
+  const names = new Map((window._lastDevices || []).map(d => [d.id, d.name]));
+  const statusFilter = document.getElementById("transferFilter")?.value || "all";
+  const scope = hostDashboard ? (document.getElementById("transferDevice")?.value || "all") : "all";
   const filtered = [...transfers]
     .filter(t => !String(t.device_id || "").startsWith("benchmark-"))
-    .filter(t => filter === "all" || (filter === "active" ? activeStates.includes(t.status) : t.status === filter))
+    .filter(t => scope === "all" || t.device_id === scope)
+    .filter(t => statusFilter === "all" || (statusFilter === "active" ? ACTIVE_STATES.includes(t.status) : t.status === statusFilter))
     .reverse();
 
   if (!filtered.length) {
-    list.innerHTML = '<li class="empty-state">No transfers recorded yet.</li>';
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = hostDashboard ? "No transfers match this view." : "You haven't sent or received anything in this browser yet.";
+    list.appendChild(empty);
     return;
   }
-
-  filtered.forEach(t => {
-    const li = document.createElement("li");
-    li.className = "transfer-row";
-    const info = document.createElement("div");
-    info.className = "transfer-info";
-    const name = document.createElement("strong");
-    name.textContent = t.filename || "Unknown file";
-    const meta = document.createElement("span");
-    const dir = t.direction === "send" ? "Sent" : "Received";
-    const timeStr = t.timestamp ? new Date(t.timestamp * 1000).toLocaleTimeString() : "";
-    meta.textContent = `${dir} · ${timeStr} · ${t.detail || t.status}`;
-    info.append(name, meta);
-
-    const st = document.createElement("span");
-    st.className = `transfer-state ${t.status}`;
-    st.textContent = t.status;
-    li.append(info, st);
-    list.appendChild(li);
-  });
+  filtered.forEach(t => list.appendChild(transferRow(t, hostDashboard, names)));
 }
 
 export function syncTabIndicators() {
   const devices = window._lastDevices || [];
   const transfers = (window._lastTransfers || []).filter(t => !String(t.device_id || "").startsWith("benchmark-"));
-  const activeStates = ["queued", "transferring", "interrupted", "verifying"];
+  const activeCount = transfers.filter(t => ACTIVE_STATES.includes(t.status)).length;
 
   const deviceBadge = document.getElementById("tabDeviceBadge");
   if (deviceBadge) deviceBadge.textContent = String(devices.length);
 
   const transferBadge = document.getElementById("tabTransferBadge");
-  const activeCount = transfers.filter(t => activeStates.includes(t.status)).length;
   if (transferBadge) {
     transferBadge.textContent = String(activeCount > 0 ? activeCount : transfers.length);
     transferBadge.classList.toggle("active-count", activeCount > 0);
@@ -211,8 +344,15 @@ export function syncTabIndicators() {
 }
 
 export function initDevicesPage() {
-  document.getElementById("transferFilter")?.addEventListener("change", () => {
-    renderTransfers(window._lastTransfers || [], true);
+  const rerender = () => renderTransfers(window._lastTransfers || [], Boolean(window._isHostDashboard));
+  document.getElementById("transferFilter")?.addEventListener("change", rerender);
+  document.getElementById("transferDevice")?.addEventListener("change", rerender);
+
+  document.getElementById("removeOfflineBtn")?.addEventListener("click", async () => {
+    const stale = (window._lastDevices || []).filter(d => !d.online && d.id !== localDeviceId);
+    if (!stale.length) return showNotice("No offline browsers to remove.", "info");
+    if (!await confirmAction("Remove offline browsers?", `Remove ${stale.length} offline profile(s)? They reappear if they reconnect.`, true)) return;
+    for (const d of stale) await deviceAction("/api/devices/forget", { id: d.id });
+    refreshDevices();
   });
 }
-

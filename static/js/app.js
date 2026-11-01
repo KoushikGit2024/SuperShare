@@ -7,63 +7,61 @@ import { localDeviceId, localDeviceName } from "./services/device.js";
 
 import { initConnectPage, refreshNetworkInfo } from "./pages/connect.js";
 import { initDevicesPage, refreshDevices } from "./pages/devices.js";
-import { initExplorerPage, fetchDirectory, showDirectoryError, setFileViewMode } from "./pages/explorer.js";
+import { initExplorerPage, initExplorerEnhancements, fetchDirectory, showDirectoryError, setFileViewMode, updateSelectionUI } from "./pages/explorer.js";
 import { initSendPage } from "./pages/send.js";
 import { initStorageMgrPage, refreshStorageInfo } from "./pages/storage_mgr.js";
 
-// Initialize UI Page Handlers
 initConnectPage();
 initDevicesPage();
 initExplorerPage();
+initExplorerEnhancements();
 initSendPage();
 initStorageMgrPage();
 initPreviewListeners();
 
-// Ensure initial file view mode (grid/tile default) is applied immediately
 setFileViewMode(localStorage.getItem("supershare-file-view-mode") || "grid");
-
-// Initialize Client-side URL Routing & Redirection
 initRouter();
 
-// Synchronize profile labels
 const srcNameEl = document.getElementById("sourceDeviceName");
 if (srcNameEl) srcNameEl.textContent = localDeviceName;
 const srcProfEl = document.getElementById("sourceProfileId");
 if (srcProfEl) srcProfEl.textContent = `Profile ID · ${localDeviceId.slice(0, 8)}`;
 
-// Hook route changes for dynamic data pre-fetching
-onRouteChanged((sectionId) => {
-  if (sectionId === "storageSection" && !window._sharedFilesLoaded) {
-    fetchDirectory().catch(showDirectoryError);
-  }
-  if (sectionId === "storageMgrSection") {
-    refreshStorageInfo();
-  }
-  if (sectionId === "devicesSection" || sectionId === "transfersSection") {
-    refreshDevices();
-  }
-  if (sectionId === "networkSection") {
-    refreshNetworkInfo();
+onRouteChanged(sectionId => {
+  if (sectionId === "storageSection" && !window._sharedFilesLoaded) fetchDirectory().catch(showDirectoryError);
+  if (sectionId === "storageMgrSection") refreshStorageInfo();
+  if (sectionId === "devicesSection" || sectionId === "transfersSection") refreshDevices();
+  if (sectionId === "networkSection") refreshNetworkInfo();
+  updateSelectionUI(); // the floating selection bar only belongs on the Files tab
+});
+
+// Esc dismisses the notice banner
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !document.querySelector("dialog[open]")) {
+    document.getElementById("notice")?.classList.add("hidden");
   }
 });
 
-// Quick QR shortcut handler
 document.getElementById("quickQrBtn")?.addEventListener("click", () => {
   navigateTo("networkSection", true);
   document.getElementById("showPairQrBtn")?.click();
 });
 
-// Initial boot fetch
 fetchDirectory().catch(showDirectoryError);
-refreshDevices();
 refreshNetworkInfo();
+refreshStorageInfo();
 
-// Periodic polling
-setInterval(() => { if (!document.hidden) refreshDevices(); }, 5000);
+(function pollDevices() {
+  const busy = (window._lastTransfers || []).some(t => ["queued", "transferring", "verifying"].includes(t.status));
+  if (!document.hidden) refreshDevices();
+  setTimeout(pollDevices, busy ? 1500 : 5000);
+})();
 setInterval(() => { if (!document.hidden) refreshNetworkInfo(); }, 30000);
+setInterval(() => { if (!document.hidden) refreshStorageInfo(); }, 60000);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     refreshDevices();
     refreshNetworkInfo();
+    refreshStorageInfo();
   }
 });

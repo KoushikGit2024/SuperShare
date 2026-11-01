@@ -68,15 +68,58 @@ def _paired_device(request):
 
 
 def _device_permissions(device):
+    access = (device or {}).get("access", "read-write")
+    if access == "blocked":
+        return {"read": False, "write": False}
     if OPEN_MODE:
-        return {"read": True, "write": True}
+        return {"read": True, "write": access != "read-only"}
     none = {"read": False, "write": False}
     if not device or not device.get("pair_confirmed"):
         return none
     if not device.get("trusted") and int(device.get("approved_until", 0)) < time.time():
         return none
     p = device.get("permissions", {})
-    return {"read": bool(p.get("read")), "write": bool(p.get("write"))}
+    return {"read": bool(p.get("read")), "write": bool(p.get("write")) and access != "read-only"}
+
+
+def _effective_device(request):
+    device = _paired_device(request)
+    if device:
+        return device
+    device_id = _device_header(request, "id").strip()
+    if OPEN_MODE and device_id:
+        with STATE["lock"]:
+            return STATE["devices"].get(device_id)
+    return None
+
+
+def _connection_kind(ip, interfaces):
+    try:
+        address = ipaddress.ip_address(ip)
+    except ValueError:
+        return "Network"
+    if address.is_loopback:
+        return "This laptop"
+    for item in interfaces:
+        try:
+            network = ipaddress.ip_network(f"{item['address']}/{item.get('netmask') or '255.255.255.0'}", strict=False)
+        except ValueError:
+            continue
+        if address in network:
+            return item.get("kind", "Local network")
+    return "Network"
+
+
+_throttle_next = {}
+
+
+async def _throttle(device_id, nbytes, limit_kbps):
+    """Aggregate per-device rate limit shared by all of that device's parallel chunks."""
+    now = time.monotonic()
+    slot = max(now, _throttle_next.get(device_id, now))
+    _throttle_next[device_id] = slot + nbytes / (limit_kbps * 1024)
+    if slot > now:
+        await asyncio.sleep(slot - now)
 
 
 def _expire_stale_jobs(now=None):
@@ -96,6 +139,25 @@ def _contiguous_chunks(mask: int) -> int:
 
 
 _CHUNK_HASHES = {}  # in-memory: job_id -> {chunk_index: sha256_hex}
+_ACTIVE_DOWNLOADS = {}
+
+
+def _begin_download(device_id, filename, size):
+    now = int(time.time())
+    job = {"id": "dl-" + uuid.uuid4().hex, "device_id": device_id, "filename": filename,
+           "size": size, "offset": 0, "status": "transferring", "timestamp": now,
+           "updated_at": now, "direction": "send", "detail": "Sending to browser", "stop": False}
+    with STATE["lock"]:
+        _ACTIVE_DOWNLOADS[job["id"]] = job
+    return job
+
+
+def _end_download(job, status, detail=""):
+    with STATE["lock"]:
+        _ACTIVE_DOWNLOADS.pop(job["id"], None)
+    record_transfer(job["device_id"], job["filename"], job["offset"], status,
+                    detail or ("Sent to browser" if status == "completed" else "Download did not finish"),
+                    job["device_id"], "send")
 
 def _write_chunk(path, offset, data):
     with open(path, "r+b") as out:
@@ -157,6 +219,8 @@ def _publish(job):
 def _fail(job, message):
     _CHUNK_HASHES.pop(job.get("id"), None)
     with STATE["lock"]:
+        if job.get("status") == "cancelled":
+            return
         job["status"] = "failed"
         job["error"] = message
         job["updated_at"] = int(time.time())
@@ -231,12 +295,19 @@ def _zip_add(zf, path, arc):
 
 def _requester_id(request):
     device = _paired_device(request)
-    return device["id"] if device else ("local-dashboard" if _is_local_host_request(request) else "unknown")
+    if device:
+        return device["id"]
+    supplied = _device_header(request, "id").strip() or request.query.get("did", "")
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,80}", supplied or ""):
+        return supplied
+    return "local-dashboard" if _is_local_host_request(request) else "unknown"
 
 
 async def _stream_zip(request, rel_paths, zip_name):
     base = STATE["share_dir"]
     entries = await asyncio.to_thread(lambda: list(iter_zip_entries(base, rel_paths)))
+    if not entries:
+        raise web.HTTPConflict(text="Nothing to download: the selection contains no files")
     q = queue.Queue(maxsize=16)
     stop = threading.Event()
     skipped = []
@@ -271,10 +342,22 @@ async def _stream_zip(request, rel_paths, zip_name):
         "Cache-Control": "no-store",
     })
     await resp.prepare(request)
+    device_id = _requester_id(request)
+    est = 0
+    for path, _arc in entries:
+        try:
+            est += os.path.getsize(path)
+        except OSError:
+            pass
+    job = _begin_download(device_id, zip_name, est)
     worker = asyncio.create_task(asyncio.to_thread(produce))
-    sent, device_id = 0, _requester_id(request)
+    status, detail = "cancelled", "Browser stopped the download"
+    all_sent = False
     try:
         while True:
+            if job["stop"]:
+                detail = "Stopped by the host"
+                return resp
             try:
                 item = await asyncio.to_thread(q.get, True, 1)
             except queue.Empty:
@@ -282,25 +365,35 @@ async def _stream_zip(request, rel_paths, zip_name):
                     break
                 continue
             if item is None:
+                all_sent = True
                 break
             if isinstance(item, BaseException):
                 raise item
             try:
                 await resp.write(item)
-                sent += len(item)
             except DISCONNECT_ERRORS:
-                record_transfer(device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
+                detail = f"Connection closed after {job['offset']:,} bytes"
                 return resp
-        try:
-            await resp.write_eof()
-            record_transfer(device_id, zip_name, sent, "completed", "Sent ZIP", device_id, "send")
-        except DISCONNECT_ERRORS:
-            record_transfer(device_id, zip_name, sent, "cancelled", "Client disconnected before the ZIP finished", device_id, "send")
+            job["offset"] += len(item)
+            job["updated_at"] = int(time.time())
+        await resp.write_eof()
+        status, detail = "completed", ""
+    except DISCONNECT_ERRORS:
+        if all_sent:
+            status, detail = "completed", "All data sent; browser closed the connection at the end"
+        else:
+            detail = f"Connection closed after {job['offset']:,} bytes"
     except asyncio.CancelledError:
-        record_transfer(device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
+        if all_sent:
+            status, detail = "completed", "All data sent; browser closed the connection at the end"
+        else:
+            detail = f"Connection closed after {job['offset']:,} bytes"
         raise
+    except Exception as exc:
+        status, detail = "failed", f"ZIP stream failed: {str(exc)[:120]}"
     finally:
         stop.set()
+        _end_download(job, status, detail)
         await asyncio.gather(worker, return_exceptions=True)
     return resp
 
@@ -358,23 +451,32 @@ def _device_header_text(request, key, fallback):
     return urllib.parse.unquote(_device_header(request, key, fallback), encoding="utf-8", errors="replace")
 
 
-def _public_transfers(limit=50):
+def _relative_to_share(dest, share):
+    try:
+        if not dest or os.path.splitdrive(dest)[0].lower() != os.path.splitdrive(share)[0].lower():
+            return None
+        return os.path.relpath(dest, share).replace(os.sep, "/")
+    except ValueError:
+        return None
+
+
+def _public_transfers(limit=50, device_id=None):
     with STATE["lock"]:
-        items = list(STATE["transfers"])
+        items = [dict(entry) for entry in STATE["transfers"]]
+        share = STATE["share_dir"]
         for job in STATE.get("transfer_jobs", {}).values():
-            if job.get("status") != "completed":
-                items.append({"id": job.get("id"), "device_id": job.get("device_id"), "filename": job.get("filename"),
-                              "size": job.get("size"), "offset": job.get("offset"), "status": job.get("status"),
-                              "timestamp": job.get("created_at"), "updated_at": job.get("updated_at"),
-                              "destination": job.get("destination"), "detail": job.get("error", ""),
-                              "relative_path": (
-    (lambda dest, share: (
-        os.path.relpath(dest, share).replace(os.sep, "/")
-        if dest and os.path.splitdrive(dest)[0].lower() == os.path.splitdrive(share)[0].lower()
-        else None
-    ))(job.get("destination", ""), STATE["share_dir"])
-)})
-        return sorted(items, key=lambda item: item.get("timestamp", item.get("updated_at", 0)))[-limit:]
+            if job.get("status") == "completed":
+                continue
+            items.append({"id": job.get("id"), "device_id": job.get("device_id"), "filename": job.get("filename"),
+                          "size": job.get("size"), "offset": job.get("offset"), "status": job.get("status"),
+                          "timestamp": job.get("created_at"), "updated_at": job.get("updated_at"),
+                          "destination": job.get("destination"), "detail": job.get("error", ""),
+                          "relative_path": _relative_to_share(job.get("destination", ""), share)})
+        for dl in _ACTIVE_DOWNLOADS.values():
+            items.append({k: v for k, v in dl.items() if k != "stop"})
+    if device_id is not None:
+        items = [item for item in items if item.get("device_id") == device_id]
+    return sorted(items, key=lambda item: item.get("timestamp", item.get("updated_at", 0)))[-limit:]
 
 
 def _all_host_interfaces():
@@ -524,7 +626,8 @@ async def status_handler(request: web.Request) -> web.Response:
         may_update_identity = local_request or not existing.get("token_hash") or _authenticated_device(request, existing)
     if device_id and may_update_identity:
         _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
-                      _device_header_text(request, "platform", "Device"), request.remote, create=local_request)
+                      _device_header_text(request, "platform", "Device"), request.remote,
+                      create=local_request or OPEN_MODE)
     if local_request and device_id:
         changed = False
         with STATE["lock"]:
@@ -536,15 +639,23 @@ async def status_handler(request: web.Request) -> web.Response:
         if changed:
             save_persistent_state()
             _device_persisted_at[device_id] = time.monotonic()
-    can_view = local_request or OPEN_MODE or _device_permissions(_paired_device(request))["read"]
+    effective = _effective_device(request)
+    perms = _device_permissions(effective)
+    can_view = local_request or perms["read"]
+    mine = []
+    if not local_request and device_id:
+        mine = [{**item, "destination": item.get("relative_path") or ""}
+                for item in _public_transfers(device_id=device_id)]
     return web.json_response({
         "status": "online",
         "server": "SuperShare",
         "share_root": STATE["share_dir"] if can_view else None,
         "host_name": os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "SuperShare host"),
         "host_dashboard": local_request,
+        "access": (effective or {}).get("access", "read-write"),
         "devices": _public_devices() if local_request else [],
         "transfers": _public_transfers() if local_request else [],
+        "my_transfers": mine,
     })
 
 
@@ -628,6 +739,8 @@ async def confirm_pairing_handler(request: web.Request) -> web.Response:
 def _touch_device(device_id, name, device_type, remote, create=True):
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id):
         return
+    if name in ("", "Unknown device") and device_type in ("", "Device"):
+        return
     name = _safe_display_text(name, 80, "Unknown device")
     device_type = _safe_display_text(device_type, 40, "Device")
     remote = _safe_display_text(remote, 80, "") if remote else ""
@@ -662,25 +775,72 @@ def _touch_device(device_id, name, device_type, remote, create=True):
             "permissions": {"read": True, "write": True} if OPEN_MODE else old.get("permissions", {"read": False, "write": False}),
             "pair_confirmed": True if OPEN_MODE else old.get("pair_confirmed", False),
             "verification_phrase": old.get("verification_phrase", ""),
+            **{key: old[key] for key in ("access", "paused", "limit_kbps") if key in old},
         }
     if persist:
         save_persistent_state()
         _device_persisted_at[device_id] = time.monotonic()
+    _merge_duplicate_profiles(device_id)
+
+
+def _merge_duplicate_profiles(new_id):
+    now = int(time.time())
+    with STATE["lock"]:
+        new = STATE["devices"].get(new_id)
+        if not new:
+            return False
+        merged = False
+        for old_id, old in list(STATE["devices"].items()):
+            if old_id == new_id:
+                continue
+            same = (old.get("type") == new.get("type")
+                    and old.get("ip") == new.get("ip")
+                    and (old.get("display_name") or old.get("name")) in (new.get("display_name") or new.get("name"), old.get("name"))
+                    and now - old.get("last_seen", 0) > 25)
+            if not same:
+                continue
+            for key in ("display_name", "access", "limit_kbps", "paused"):
+                if key in old and key not in new or (key == "display_name" and old.get("display_name") and not new.get("display_name")):
+                    new[key] = old[key]
+            if old.get("display_name"):
+                new["name"] = old["display_name"]
+            new["first_seen"] = min(new.get("first_seen", now), old.get("first_seen", now))
+            for job in STATE.get("transfer_jobs", {}).values():
+                if job.get("device_id") == old_id:
+                    job["device_id"] = new_id
+            STATE["devices"].pop(old_id, None)
+            merged = True
+    if merged:
+        save_persistent_state()
+    return merged
 
 
 def _public_devices():
     now = int(time.time())
+    interfaces = _host_interfaces()
     with STATE["lock"]:
+        active = {}
+        for job in STATE.get("transfer_jobs", {}).values():
+            if job.get("status") in ACTIVE_SLOT_STATES:
+                active[job.get("device_id")] = active.get(job.get("device_id"), 0) + 1
+        for dl in _ACTIVE_DOWNLOADS.values():
+            active[dl["device_id"]] = active.get(dl["device_id"], 0) + 1
         result = []
         for device in STATE["devices"].values():
             item = dict(device)
+            access = item.get("access", "read-write")
+            item["access"] = access
+            item["paused"] = bool(item.get("paused"))
+            item["limit_kbps"] = int(item.get("limit_kbps") or 0)
             item["paired"] = True if OPEN_MODE else bool(item.get("token_hash"))
             item["pair_confirmed"] = True if OPEN_MODE else bool(item.get("pair_confirmed", False))
             item["trusted"] = True if OPEN_MODE else bool(item.get("trusted", False))
             if OPEN_MODE:
-                item["permissions"] = {"read": True, "write": True}
+                item["permissions"] = {"read": access != "blocked", "write": access == "read-write"}
             item.pop("token_hash", None)
             item["online"] = now - item.get("last_seen", 0) < 25
+            item["connection"] = _connection_kind(item.get("ip", ""), interfaces)
+            item["active_transfers"] = active.get(item.get("id"), 0)
             result.append(item)
         return sorted(result, key=lambda d: (not d["online"], d["name"].lower()))
 
@@ -715,9 +875,9 @@ def _require_host_dashboard(request):
 
 
 def _require_share_access(request, permission="read"):
-    if OPEN_MODE or _is_local_host_request(request):
+    if _is_local_host_request(request):
         return
-    perms = _device_permissions(_paired_device(request))
+    perms = _device_permissions(_effective_device(request))
     if not perms.get(permission):
         raise web.HTTPForbidden(text=f"The host has not granted this browser {permission} access")
 
@@ -725,7 +885,12 @@ def _require_share_access(request, permission="read"):
 def _authorize_transfer_write(request):
     _require_share_access(request, "write")
     device = _paired_device(request)
-    return device["id"] if device else (_device_header(request, "id").strip() or "local-dashboard")
+    device_id = device["id"] if device else (_device_header(request, "id").strip() or "local-dashboard")
+    if (not device and OPEN_MODE and not _is_local_host_request(request)
+            and re.fullmatch(r"[A-Za-z0-9_-]{8,80}", device_id)):
+        _touch_device(device_id, _device_header_text(request, "name", "Unknown device"),
+                      _device_header_text(request, "platform", "Device"), request.remote)
+    return device_id
 
 
 def _authenticated_device(request, device):
@@ -921,21 +1086,63 @@ async def preview_file_handler(request: web.Request) -> web.Response:
     })
 
 
-async def download_handler(request: web.Request) -> web.Response:
+async def download_handler(request: web.Request) -> web.StreamResponse:
     _require_share_access(request)
     target = safe_join(STATE["share_dir"], request.query.get("path", ""))
     if not os.path.isfile(target):
         raise web.HTTPNotFound(text="File not found")
     name = os.path.basename(target)
-    rng = request.headers.get("Range", "")
-    if not rng or rng.startswith("bytes=0-"):
-        device_id = _requester_id(request)
-        await asyncio.to_thread(record_transfer, device_id, name, os.path.getsize(target),
-                                "completed", "Download started", device_id, "send")
-    return web.FileResponse(target, headers={
-        "Content-Disposition": _content_disposition(name),
-        "Cache-Control": "no-store",
-    })
+    size = os.path.getsize(target)
+    start, end, status = 0, size - 1, 200
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", request.headers.get("Range", "").strip())
+    if size and match and (match.group(1) or match.group(2)):
+        if match.group(1):
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else size - 1
+        else:
+            start, end = max(0, size - int(match.group(2))), size - 1
+        end = min(end, size - 1)
+        if start > end:
+            raise web.HTTPRequestedRangeNotSatisfiable(headers={"Content-Range": f"bytes */{size}"})
+        status = 206
+    length = max(0, end - start + 1)
+    headers = {"Content-Type": "application/octet-stream", "Content-Length": str(length),
+               "Accept-Ranges": "bytes", "Content-Disposition": _content_disposition(name),
+               "Cache-Control": "no-store"}
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+
+    device_id = _requester_id(request)
+    limit_kbps = int((STATE["devices"].get(device_id) or {}).get("limit_kbps") or 0)
+    resp = web.StreamResponse(status=status, headers=headers)
+    await resp.prepare(request)
+    job = _begin_download(device_id, name, length)
+    try:
+        with open(target, "rb") as source:
+            source.seek(start)
+            remaining = length
+            while remaining > 0:
+                if job["stop"]:
+                    _end_download(job, "cancelled", "Stopped by the host")
+                    return resp
+                block = await asyncio.to_thread(source.read, min(1024 * 1024, remaining))
+                if not block:
+                    break
+                if limit_kbps:
+                    await _throttle(device_id, len(block), limit_kbps)
+                await resp.write(block)
+                remaining -= len(block)
+                job["offset"] += len(block)
+                job["updated_at"] = int(time.time())
+        await resp.write_eof()
+        _end_download(job, "completed")
+    except (asyncio.CancelledError, *DISCONNECT_ERRORS):
+        _end_download(job, "cancelled", "Browser stopped the download")
+        raise
+    except OSError as exc:
+        _end_download(job, "failed", f"Host could not read the file: {exc.strerror}")
+        raise
+    return resp
 
 
 async def _stream_and_remove_zip(request: web.Request, tmp_zip: str, zip_filename: str) -> web.StreamResponse:
@@ -1184,9 +1391,10 @@ async def create_transfer_handler(request: web.Request) -> web.Response:
 
 def _get_transfer_job(request, job_id):
     device_id = _authorize_transfer_write(request)
+    local = _is_local_host_request(request)
     with STATE["lock"]:
         job = STATE.get("transfer_jobs", {}).get(job_id)
-        if not job or (not _is_local_host_request(request) and not OPEN_MODE and job.get("device_id") != device_id):
+        if not job or (not local and job.get("device_id") != device_id):
             raise web.HTTPNotFound(text="Transfer session not found")
         return job
 
@@ -1205,17 +1413,24 @@ async def transfer_chunk_handler(request: web.Request) -> web.Response:
     if not re.fullmatch(r"[a-f0-9]{64}", supplied):
         raise web.HTTPBadRequest(text="X-Chunk-SHA256 header is required")
 
+    device_state = STATE["devices"].get(job["device_id"]) or {}
+    if device_state.get("paused"):
+        raise web.HTTPLocked(text="Paused by the host. Sending continues automatically when the host resumes it.",
+                             headers={"Retry-After": "3"})
     with STATE["lock"]:
         if job["status"] not in {"queued", "transferring", "interrupted"}:
             raise web.HTTPConflict(text=f"Transfer is {job['status']}")
         job["status"], job["updated_at"] = "transferring", int(time.time())
 
+    limit_kbps = int(device_state.get("limit_kbps") or 0)
     buf = bytearray()
     touched = time.monotonic()
     async for piece in request.content.iter_chunked(256 * 1024):
         buf.extend(piece)
         if len(buf) > expected:
             raise web.HTTPRequestEntityTooLarge(max_size=expected, actual_size=len(buf))
+        if limit_kbps:
+            await _throttle(job["device_id"], len(piece), limit_kbps)
         if time.monotonic() - touched > 5:
             touched = time.monotonic()
             job["updated_at"] = int(time.time())
@@ -1311,6 +1526,8 @@ async def complete_transfer_handler(request: web.Request) -> web.Response:
         _fail(job, "A file already exists at this destination")
         raise web.HTTPConflict(text=job["error"])
     except Exception as exc:
+        if job.get("status") == "cancelled":
+            raise web.HTTPConflict(text=job.get("error", "Transfer was cancelled")) from exc
         _fail(job, f"Could not publish file: {exc}")
         raise web.HTTPInternalServerError(text=job["error"]) from exc
 
@@ -1340,23 +1557,32 @@ async def cancel_transfer_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "cancelled"})
 
 
+STALE_PARTIAL_SECONDS = 24 * 3600
+
+
 def _scan_share(root):
-    shared_bytes = shared_count = part_bytes = part_count = 0
+    shared_bytes = shared_count = part_bytes = part_count = stale_bytes = stale_count = 0
+    now = time.time()
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             try:
-                size = os.path.getsize(os.path.join(dirpath, name))
+                st = os.stat(os.path.join(dirpath, name))
             except OSError:
                 continue
             if name.startswith(".supershare-") and name.endswith(".partial"):
                 part_count += 1
-                part_bytes += size
+                part_bytes += st.st_size
+                if now - st.st_mtime > STALE_PARTIAL_SECONDS:
+                    stale_count += 1
+                    stale_bytes += st.st_size
             else:
                 shared_count += 1
-                shared_bytes += size
-    return shared_bytes, shared_count, part_bytes, part_count
+                shared_bytes += st.st_size
+    return shared_bytes, shared_count, part_bytes, part_count, stale_bytes, stale_count
 
-_storage_cache = {"root": None, "at": 0.0, "scan": (0, 0, 0, 0)}
+
+_storage_cache = {"root": None, "at": 0.0, "scan": (0, 0, 0, 0, 0, 0)}
+
 
 async def storage_info_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
@@ -1369,12 +1595,14 @@ async def storage_info_handler(request: web.Request) -> web.Response:
     if _storage_cache["root"] != root or time.monotonic() - _storage_cache["at"] > 20:
         scan_res = await asyncio.to_thread(_scan_share, root)
         _storage_cache.update(root=root, at=time.monotonic(), scan=scan_res)
-    sb, sc, pb, pc = _storage_cache["scan"]
+    sb, sc, pb, pc, stale_b, stale_c = _storage_cache["scan"]
     with STATE["lock"]:
         devices_count, transfers_count = len(STATE["devices"]), len(STATE["transfers"])
     return web.json_response({
         "share_dir": root, "disk_total": total, "disk_free": free, "disk_used": used,
         "shared_files_bytes": sb, "shared_files_count": sc, "partial_bytes": pb, "partial_count": pc,
+        "stale_partial_bytes": stale_b, "stale_partial_count": stale_c, "stale_after_hours": 24,
+        "low_space": bool(total) and free < max(1 << 30, int(total * 0.05)),
         "devices_count": devices_count, "transfers_count": transfers_count
     })
 
@@ -1389,8 +1617,98 @@ async def clear_history_handler(request: web.Request) -> web.Response:
 async def clear_partials_handler(request: web.Request) -> web.Response:
     _require_host_dashboard(request)
     from .config import clear_temp_partials
-    res = clear_temp_partials()
+    body = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    try:
+        hours = float(body.get("older_than_hours", 0)) if isinstance(body, dict) else 0
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="older_than_hours must be a number")
+    res = await asyncio.to_thread(clear_temp_partials, max(0, hours) * 3600)
+    _storage_cache["at"] = 0.0
     return web.json_response({"status": "ok", "removed": res["removed"], "reclaimed_bytes": res["reclaimed_bytes"]})
+
+
+async def zip_preflight_handler(request: web.Request) -> web.Response:
+    _require_share_access(request)
+    if "items" in request.query:
+        try:
+            items = json.loads(request.query.get("items", "[]"))
+            if not (isinstance(items, list) and len(items) <= 500 and all(isinstance(i, str) for i in items)):
+                raise ValueError
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid selection")
+    else:
+        items = [request.query.get("path", "")]
+
+    def scan():
+        files = total = 0
+        for full, _arc in iter_zip_entries(STATE["share_dir"], items):
+            files += 1
+            try:
+                total += os.path.getsize(full)
+            except OSError:
+                pass
+            if files >= 200000:
+                break
+        return files, total
+
+    files, total = await asyncio.to_thread(scan)
+    return web.json_response({"files": files, "bytes": total, "empty": files == 0})
+
+
+async def device_policy_handler(request: web.Request) -> web.Response:
+    _require_host_dashboard(request)
+    body = await _json_body(request)
+    device_id = str(body.get("id", ""))
+    with STATE["lock"]:
+        device = STATE["devices"].get(device_id)
+        if not device:
+            raise web.HTTPNotFound(text="Device not found")
+        if "access" in body:
+            if body["access"] not in {"read-only", "read-write", "blocked"}:
+                raise web.HTTPBadRequest(text="access must be read-only, read-write, or blocked")
+            device["access"] = body["access"]
+        if "paused" in body:
+            device["paused"] = bool(body["paused"])
+        if "limit_kbps" in body:
+            try:
+                limit = int(body["limit_kbps"] or 0)
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text="limit_kbps must be a number")
+            device["limit_kbps"] = 0 if limit <= 0 else max(256, min(limit, 10_000_000))
+    if body.get("access") == "blocked":
+        _cancel_device_transfer_jobs(device_id, "Blocked by the host")
+    save_persistent_state()
+    return web.json_response({"status": "ok"})
+
+
+async def download_stop_handler(request: web.Request) -> web.Response:
+    _require_host_dashboard(request)
+    body = await _json_body(request)
+    job = _ACTIVE_DOWNLOADS.get(str(body.get("id", "")))
+    if not job:
+        raise web.HTTPNotFound(text="Download is no longer active")
+    job["stop"] = True
+    return web.json_response({"status": "ok"})
+
+
+async def device_terminate_handler(request: web.Request) -> web.Response:
+    _require_host_dashboard(request)
+    body = await _json_body(request)
+    device_id = str(body.get("id", ""))
+    with STATE["lock"]:
+        count = sum(1 for job in STATE.get("transfer_jobs", {}).values()
+                    if job.get("device_id") == device_id and job.get("status") in ACTIVE_SLOT_STATES | {"interrupted"})
+    for dl in list(_ACTIVE_DOWNLOADS.values()):
+        if dl["device_id"] == device_id:
+            dl["stop"] = True
+            count += 1
+    _cancel_device_transfer_jobs(device_id, "Stopped by the host")
+    return web.json_response({"status": "ok", "stopped": count})
 
 
 async def reset_state_handler(request: web.Request) -> web.Response:

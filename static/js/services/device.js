@@ -11,7 +11,10 @@ if (!localDeviceId) {
     ? crypto.randomUUID()
     : Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("");
 }
+const cookieMatch = document.cookie.match(/(?:^|; )supershare_did=([A-Za-z0-9_-]{8,80})/);
+if (!safeStorage.getItem(deviceIdKey) && cookieMatch) localDeviceId = cookieMatch[1];
 safeStorage.setItem(deviceIdKey, localDeviceId);
+document.cookie = `supershare_did=${localDeviceId}; max-age=31536000; path=/; samesite=lax`;
 
 // Purge resume keys older than 7 days
 try {
