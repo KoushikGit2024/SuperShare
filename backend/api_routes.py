@@ -34,7 +34,7 @@ async def _json_body(request: web.Request) -> dict:
         raise web.HTTPBadRequest(text="Expected a JSON object")
     return body
 
-OPEN_MODE = os.environ.get("SUPERSHARE_OPEN_MODE") == "1"
+OPEN_MODE = os.environ.get("SUPERSHARE_OPEN_MODE", "1") != "0"
 
 
 def _paired_device(request):
@@ -53,6 +53,8 @@ def _paired_device(request):
 
 
 def _device_permissions(device):
+    if OPEN_MODE:
+        return {"read": True, "write": True}
     none = {"read": False, "write": False}
     if not device or not device.get("pair_confirmed"):
         return none
@@ -422,7 +424,7 @@ async def network_handler(request: web.Request) -> web.Response:
         "interfaces": interfaces,
         "connection": connection,
         "connection_path": "/",
-        "pairing_required": True,
+        "pairing_required": False,
         "internet_required": False,
     })
 
@@ -596,6 +598,7 @@ def _touch_device(device_id, name, device_type, remote, create=True):
         persist = (not old or old.get("name") != display_name
                    or old.get("type") != device_type
                    or old.get("ip") != (remote or old.get("ip", ""))
+                   or not old.get("trusted")
                    or time.monotonic() - _device_persisted_at.get(device_id, 0) >= 60)
         STATE["devices"][device_id] = {
             "id": device_id,
@@ -606,11 +609,11 @@ def _touch_device(device_id, name, device_type, remote, create=True):
             "first_seen": old.get("first_seen", int(time.time())),
             "last_seen": now,
             "online": True,
-            "trusted": old.get("trusted", False),
-            "approved_until": old.get("approved_until", 0),
+            "trusted": True if OPEN_MODE else old.get("trusted", False),
+            "approved_until": 0,
             "token_hash": old.get("token_hash", ""),
-            "permissions": old.get("permissions", {"read": False, "write": False}),
-            "pair_confirmed": old.get("pair_confirmed", False),
+            "permissions": {"read": True, "write": True} if OPEN_MODE else old.get("permissions", {"read": False, "write": False}),
+            "pair_confirmed": True if OPEN_MODE else old.get("pair_confirmed", False),
             "verification_phrase": old.get("verification_phrase", ""),
         }
     if persist:
@@ -624,8 +627,11 @@ def _public_devices():
         result = []
         for device in STATE["devices"].values():
             item = dict(device)
-            item["paired"] = bool(item.get("token_hash"))
-            item["pair_confirmed"] = bool(item.get("pair_confirmed", False))
+            item["paired"] = True if OPEN_MODE else bool(item.get("token_hash"))
+            item["pair_confirmed"] = True if OPEN_MODE else bool(item.get("pair_confirmed", False))
+            item["trusted"] = True if OPEN_MODE else bool(item.get("trusted", False))
+            if OPEN_MODE:
+                item["permissions"] = {"read": True, "write": True}
             item.pop("token_hash", None)
             item["online"] = now - item.get("last_seen", 0) < 25
             result.append(item)

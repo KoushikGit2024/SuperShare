@@ -547,7 +547,7 @@ async function refreshNetworkInfo() {
       }
     }
     status.textContent = connection
-      ? `${connection.kind} ready · Pairing required · Internet not required${extra}`
+      ? `${connection.kind} ready · Instant sharing enabled · Internet not required${extra}`
       : `SuperShare is running on this laptop, but no Wi-Fi / hotspot address is available${extra}`;
     status.classList.remove("error");
     status.classList.toggle("attention", !connection);
@@ -612,16 +612,14 @@ async function checkUploadPermission() {
   const response = await fetch("/api/upload-permission", { headers: deviceHeaders(), credentials: "same-origin" });
   if (!response.ok) throw new Error(`Connection check failed (${response.status})`);
   const result = await response.json();
-  window._profilePaired = Boolean(result.paired);
-  const canRead = Boolean(result.approved && result.permissions?.read);
+  window._profilePaired = true;
+  const canRead = true;
   const phrasePanel = document.getElementById("pairPhrasePanel");
-  phrasePanel.classList.toggle("hidden", !result.paired || result.pair_confirmed || !result.verification_phrase);
-  if (result.verification_phrase) document.getElementById("pairPhrase").textContent = result.verification_phrase;
-  if (!uploadInProgress) setConnectionState(result.allowed ? "Approved to send" : canRead ? "Host granted read-only access" : result.approved ? "Host granted send-only access" : result.paired ? "Waiting for host approval" : "Pair with the host", result.allowed || canRead ? "online" : "pending");
-  const localHost = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-  document.getElementById("pairDeviceBtn").classList.toggle("hidden", result.paired || localHost);
-  if (!result.paired && !localHost) setConnectionState("Pair this device to continue", "pending");
-  return { canSend: Boolean(result.allowed), canRead };
+  if (phrasePanel) phrasePanel.classList.add("hidden");
+  if (!uploadInProgress) setConnectionState("Ready to Share · Read + Send", "online");
+  const pairBtn = document.getElementById("pairDeviceBtn");
+  if (pairBtn) pairBtn.classList.add("hidden");
+  return { canSend: true, canRead: true };
 }
 
 async function pairThisDevice() {
@@ -705,36 +703,14 @@ async function refreshDevices() {
       const identity = document.createElement("code"); identity.className = "device-identity"; identity.textContent = `Browser profile ID · ${String(device.id).slice(0, 8)}`;
       identity.title = String(device.id);
       const approval = document.createElement("span");
-      approval.textContent = device.trusted ? "Persistent trust" : device.approved_until ? `Temporary approval until ${new Date(device.approved_until * 1000).toLocaleString()}` : "No active approval";
+      approval.textContent = "Always allowed · Full access";
       info.append(title, meta, identity, approval); main.append(avatar, info);
-      const isThisProfile = device.id === localDeviceId;
-      const perms = device.permissions || {};
-      const live = device.trusted || (device.approved_until || 0) > Date.now() / 1000;
-      const access = !device.paired ? "Not paired" : !device.pair_confirmed ? "Phrase not confirmed"
-        : !live ? "Awaiting approval" : [perms.read && "Read", perms.write && "Send"].filter(Boolean).join(" + ") || "No access";
       const state = document.createElement("span"); 
       state.className = `device-state ${device.online ? "online" : "offline"}`;
-      state.textContent = `${device.online ? "Online" : "Offline"} · ${access}`;
+      state.textContent = `${device.online ? "Online" : "Offline"} · Ready to Share · Read + Send`;
       li.append(main, state);
       {
         const controls = document.createElement("div"); controls.className = "device-controls";
-        if (data.host_dashboard && device.id !== localDeviceId) {
-          const mk = (label, fn, cls = "outline") => { const b = document.createElement("button"); b.className = `btn-xs ${cls}`; b.textContent = label; b.onclick = fn; return b; };
-          const grant = remember => async () => { if (await deviceAction("/api/devices/approve", { id: device.id, permissions: { read: true, write: true }, remember })) refreshDevices(); };
-          const ready = device.paired;
-          if (device.paired && !device.pair_confirmed && device.verification_phrase) {
-            const phraseCode = document.createElement("code");
-            phraseCode.style.cssText = "display:block;width:100%;margin-bottom:6px;color:#fef08a;font-weight:bold;";
-            phraseCode.textContent = `Compare phrase: ${device.verification_phrase}`;
-            controls.appendChild(phraseCode);
-          }
-          const allow = mk("Allow 15 min", grant(false), "accent"); allow.disabled = !ready;
-          const always = mk("Always allow", grant(true)); always.disabled = !ready;
-          const revoke = mk("Revoke", async () => {
-            if (await confirmAction("Revoke access?", `${device.name} loses access and its transfers are cancelled.`, true)
-                && await deviceAction("/api/devices/revoke", { id: device.id })) refreshDevices(); });
-          controls.prepend(allow, always, revoke);
-        }
         const rename = document.createElement("button"); rename.className = "btn-xs outline"; rename.textContent = "Rename";
         rename.onclick = async () => {
           const name = await editText("Name device", `Give this device a recognizable name:`, "Display name", device.name);
