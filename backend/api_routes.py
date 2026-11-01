@@ -845,6 +845,29 @@ async def delete_selected_handler(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "deleted": res.get("deleted", 0), "failed": res.get("failed", [])})
 
 
+async def preview_file_handler(request: web.Request) -> web.Response:
+    _require_share_access(request)
+    target = safe_join(STATE["share_dir"], request.query.get("path", ""))
+    if not os.path.isfile(target):
+        raise web.HTTPNotFound(text="File not found")
+    name = os.path.basename(target)
+    # Check mime type
+    import mimetypes
+    mime, _ = mimetypes.guess_type(target)
+    mime = mime or "application/octet-stream"
+    # Text-based types
+    ext = os.path.splitext(name)[1].lower()
+    text_extensions = {".txt", ".md", ".py", ".js", ".json", ".html", ".css", ".csv", ".log", ".xml", ".sh", ".ps1", ".yaml", ".yml", ".ini"}
+    if ext in text_extensions:
+        mime = "text/plain; charset=utf-8"
+
+    return web.FileResponse(target, headers={
+        "Content-Type": mime,
+        "Content-Disposition": f'inline; filename="{urllib.parse.quote(name)}"',
+        "Cache-Control": "public, max-age=3600",
+    })
+
+
 async def download_handler(request: web.Request) -> web.Response:
     _require_share_access(request)
     target = safe_join(STATE["share_dir"], request.query.get("path", ""))

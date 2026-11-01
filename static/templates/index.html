@@ -153,6 +153,22 @@
       </div>
     </section>
 
+    <!-- File Preview Modal -->
+  <div id="previewModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+    <div class="modal-card preview-card">
+      <div class="modal-header">
+        <h3 id="previewModalTitle" class="preview-title"><svg class="icon heading-icon" aria-hidden="true"><use href="#i-files"/></svg> <span id="previewFileName">File Preview</span></h3>
+        <div class="preview-header-actions">
+          <a id="previewDownloadBtn" href="#" class="btn-xs accent" download><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg> Download</a>
+          <button id="closePreviewBtn" class="btn-xs outline" aria-label="Close Preview"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+        </div>
+      </div>
+      <div id="previewContent" class="preview-content">
+        <!-- Dynamic preview content: image, audio, video, pdf, or text -->
+      </div>
+    </div>
+  </div>
+
   <!-- Host PC Drive & Folder Picker Modal (Works from both Phone & PC!) -->
   <div id="hostModal" class="modal-overlay hidden">
     <div class="modal-card">

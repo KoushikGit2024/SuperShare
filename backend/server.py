@@ -31,6 +31,7 @@ from .api_routes import (
     mkdir_handler,
     delete_selected_handler,
     download_handler,
+    preview_file_handler,
     zip_folder_handler,
     zip_selected_handler,
     network_handler,
@@ -171,6 +172,7 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.router.add_get("/api/host-folders", host_folders_handler)
     app.router.add_post("/api/pick-host-gui", pick_host_gui_handler)
     app.router.add_get("/api/download", download_handler)
+    app.router.add_get("/api/preview", preview_file_handler)
     app.router.add_get("/api/zip", zip_folder_handler)
     app.router.add_get("/api/zip-selected", zip_selected_handler)
 

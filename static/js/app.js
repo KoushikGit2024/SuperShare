@@ -1,3 +1,118 @@
+/* --- File Preview Handler --- */
+const PREVIEW_TYPES = {
+  img: new Set(["jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "ico", "avif"]),
+  video: new Set(["mp4", "webm", "ogg", "mov", "mkv"]),
+  audio: new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac"]),
+  pdf: new Set(["pdf"]),
+  text: new Set(["txt", "md", "json", "py", "js", "html", "css", "csv", "log", "xml", "sh", "ps1", "yaml", "yml", "ini", "sql", "bat", "env", "ts"])
+};
+
+function getFileExtension(filename) {
+  const parts = filename.split(".");
+  return parts.length > 1 ? parts.pop().toLowerCase() : "";
+}
+
+function canPreviewFile(filename) {
+  const ext = getFileExtension(filename);
+  return Object.values(PREVIEW_TYPES).some(set => set.has(ext));
+}
+
+async function openFilePreview(relPath, filename, size) {
+  const modal = document.getElementById("previewModal");
+  const title = document.getElementById("previewFileName");
+  const content = document.getElementById("previewContent");
+  const dlBtn = document.getElementById("previewDownloadBtn");
+
+  title.textContent = `${filename} (${formatBytes(size)})`;
+  dlBtn.href = `/api/download?path=${encodeURIComponent(relPath)}`;
+  dlBtn.dataset.downloadName = filename;
+  content.replaceChildren();
+
+  const previewUrl = `/api/preview?path=${encodeURIComponent(relPath)}`;
+  const ext = getFileExtension(filename);
+
+  if (PREVIEW_TYPES.img.has(ext)) {
+    const img = document.createElement("img");
+    img.className = "preview-img";
+    img.src = previewUrl;
+    img.alt = filename;
+    img.loading = "lazy";
+    content.appendChild(img);
+  } else if (PREVIEW_TYPES.audio.has(ext)) {
+    const wrap = document.createElement("div");
+    wrap.className = "preview-audio-container";
+    const audioIcon = icon("music", "preview-audio-icon");
+    const audio = document.createElement("audio");
+    audio.className = "preview-media";
+    audio.controls = true;
+    audio.autoplay = true;
+    audio.src = previewUrl;
+    wrap.append(audioIcon, audio);
+    content.appendChild(wrap);
+  } else if (PREVIEW_TYPES.video.has(ext)) {
+    const video = document.createElement("video");
+    video.className = "preview-media";
+    video.controls = true;
+    video.autoplay = true;
+    video.src = previewUrl;
+    content.appendChild(video);
+  } else if (PREVIEW_TYPES.pdf.has(ext)) {
+    const iframe = document.createElement("iframe");
+    iframe.className = "preview-frame";
+    iframe.src = previewUrl;
+    content.appendChild(iframe);
+  } else if (PREVIEW_TYPES.text.has(ext)) {
+    if (size > 4 * 1024 * 1024) {
+      const msg = document.createElement("div");
+      msg.className = "preview-unsupported";
+      msg.textContent = "Text file exceeds 4 MB. Download it to view full contents.";
+      content.appendChild(msg);
+    } else {
+      const pre = document.createElement("pre");
+      pre.className = "preview-text";
+      pre.textContent = "Loading file content...";
+      content.appendChild(pre);
+      try {
+        const res = await fetch(previewUrl);
+        if (res.ok) {
+          pre.textContent = await res.text();
+        } else {
+          pre.textContent = "Could not load file preview.";
+        }
+      } catch (err) {
+        pre.textContent = `Error loading preview: ${err.message}`;
+      }
+    }
+  } else {
+    const un = document.createElement("div");
+    un.className = "preview-unsupported";
+    un.textContent = "No inline preview available for this file type.";
+    content.appendChild(un);
+  }
+
+  modal.classList.remove("hidden");
+}
+
+function closeFilePreview() {
+  const modal = document.getElementById("previewModal");
+  const content = document.getElementById("previewContent");
+  // Pause any playing audio or video
+  const media = content.querySelector("audio, video");
+  if (media) media.pause();
+  content.replaceChildren();
+  modal.classList.add("hidden");
+}
+
+document.getElementById("closePreviewBtn")?.addEventListener("click", closeFilePreview);
+document.getElementById("previewModal")?.addEventListener("click", event => {
+  if (event.target.id === "previewModal") closeFilePreview();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && !document.getElementById("previewModal")?.classList.contains("hidden")) {
+    closeFilePreview();
+  }
+});
+
 async function waitForHost(signal) {
   for (let i = 0; ; i++) {
     signal?.throwIfAborted();
@@ -919,10 +1034,39 @@ async function fetchDirectory(path = "") {
       link.dataset.downloadName = item.name; link.dataset.downloadSize = String(item.size || 0);
       link.append(icon("files"), document.createTextNode(` ${item.name}`));
       const meta = document.createElement("div"); meta.className = "file-meta"; meta.textContent = formatBytes(item.size); info.append(link, meta);
-      const button = document.createElement("a"); button.href = `/api/download?path=${encoded}`; button.className = "dl-btn"; button.download = "";
+
+      const actionGroup = document.createElement("div");
+      actionGroup.className = "file-actions-group";
+
+      if (canPreviewFile(item.name)) {
+        const previewBtn = document.createElement("button");
+        previewBtn.type = "button";
+        previewBtn.className = "btn-preview";
+        previewBtn.append(icon("monitor"), document.createTextNode(" Preview"));
+        previewBtn.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          openFilePreview(relPath, item.name, item.size || 0);
+        };
+        actionGroup.appendChild(previewBtn);
+        // Also clicking link can preview if user wants
+        link.onclick = (e) => {
+          e.preventDefault();
+          openFilePreview(relPath, item.name, item.size || 0);
+        };
+      }
+
+      const button = document.createElement("a");
+      button.href = `/api/download?path=${encoded}`;
+      button.className = "dl-btn";
+      button.download = "";
       button.dataset.downloadName = item.name;
       button.dataset.downloadSize = String(item.size || 0);
-      button.append(icon("download"), document.createTextNode(" Save")); left.appendChild(info); li.append(left, button);
+      button.append(icon("download"), document.createTextNode(" Save"));
+      actionGroup.appendChild(button);
+
+      left.appendChild(info);
+      li.append(left, actionGroup);
     }
     checkbox.setAttribute("aria-label", `Select ${item.name}`); list.appendChild(li);
   });
