@@ -1,5 +1,49 @@
 <section class="card tab-panel tab-hidden" id="transfersSection" role="tabpanel" aria-labelledby="tab-activity">
-      <div class="section-heading"><div><span class="eyebrow">TRANSFER HISTORY</span><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer"/></svg> <span id="activityTitleText">Activity</span></h2><p>See which browser sent or received each file, where it went, and whether it finished. Browsers other than the laptop only see their own transfers.</p></div><div class="activity-filters"><label class="transfer-filter-label hidden" for="transferDevice">Device <select id="transferDevice"><option value="all">All devices</option></select></label><label class="transfer-filter-label" for="transferFilter">Show <select id="transferFilter"><option value="all">All states</option><option value="active">Active</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></label></div></div>
-      <figure class="throughput" id="throughputPanel"><figcaption><span id="throughputLabel">Completed transfers, last 15 minutes</span><strong id="throughputPeak"></strong></figcaption><svg id="throughputChart" viewBox="0 0 300 70" preserveAspectRatio="none" role="img" aria-label="Completed transfer volume per minute over the last 15 minutes"></svg></figure>
-      <ul id="transferList" class="transfer-list"><li class="empty-state">No transfers yet.</li></ul>
-    </section>
+  <div class="section-heading">
+    <div>
+      <span class="eyebrow">TRANSFER HISTORY</span>
+      <h2>
+        <svg class="icon heading-icon" aria-hidden="true"><use href="#i-transfer" /></svg>
+        <span id="activityTitleText">Activity</span>
+      </h2>
+      <p>
+        See which browser sent or received each file, where it went, and whether it finished. Browsers other than the
+        laptop only see their own transfers.
+      </p>
+    </div>
+    <div class="activity-filters">
+      <label class="transfer-filter-label hidden" for="transferDevice">
+        Device
+        <select id="transferDevice">
+          <option value="all">All devices</option>
+        </select>
+      </label>
+      <label class="transfer-filter-label" for="transferFilter">
+        Show
+        <select id="transferFilter">
+          <option value="all">All states</option>
+          <option value="active">Active</option>
+          <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <figure class="throughput" id="throughputPanel">
+    <figcaption>
+      <span id="throughputLabel">Completed transfers, last 15 minutes</span>
+      <strong id="throughputPeak"></strong>
+    </figcaption>
+    <svg
+      id="throughputChart"
+      viewBox="0 0 300 70"
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="Completed transfer volume per minute over the last 15 minutes"
+    ></svg>
+  </figure>
+  <ul id="transferList" class="transfer-list">
+    <li class="empty-state">No transfers yet.</li>
+  </ul>
+</section>

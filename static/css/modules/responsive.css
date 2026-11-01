@@ -51,12 +51,37 @@
 
 /* --- Mobile Ergonomics & WCAG AA Usability --- */
 @media (pointer: coarse) {
-  .btn-xs, .btn-sm, .dl-btn, .tab-btn, .modal-folder-list li, .action-dialog-actions button { min-height: 44px; }
-  input[type="checkbox"] { width: 28px; height: 28px; }
-  .item-left, .checkbox-label { gap: 14px; }
+  .btn-xs,
+  .btn-sm,
+  .dl-btn,
+  .tab-btn,
+  .modal-folder-list li,
+  .action-dialog-actions button {
+    min-height: 44px;
+  }
+  input[type="checkbox"] {
+    width: 28px;
+    height: 28px;
+  }
+  .item-left,
+  .checkbox-label {
+    gap: 14px;
+  }
 }
 
-input, select, textarea { font-size: 16px; }
-body:has(dialog[open]), body:has(#hostModal:not(.hidden)) { overflow: hidden; }
-.action-dialog-card { max-height: calc(100dvh - 24px); overflow: auto; }
-.modal-card { max-height: calc(100dvh - 32px); }
+input,
+select,
+textarea {
+  font-size: 16px;
+}
+body:has(dialog[open]),
+body:has(#hostModal:not(.hidden)) {
+  overflow: hidden;
+}
+.action-dialog-card {
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+}
+.modal-card {
+  max-height: calc(100dvh - 32px);
+}

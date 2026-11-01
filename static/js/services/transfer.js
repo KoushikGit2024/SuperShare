@@ -21,25 +21,32 @@ export function cancelActiveSession() {
       method: "POST",
       credentials: "same-origin",
       keepalive: true,
-      headers: deviceHeaders()
+      headers: deviceHeaders(),
     }).catch(() => {});
   }
   activeUploads.clear();
 }
 
-export const relPath = file => file._relativePath || file.webkitRelativePath || file.name;
+export const relPath = (file) => file._relativePath || file.webkitRelativePath || file.name;
 
 export async function filesFromDataTransfer(dt) {
   if (!dt) return [];
-  const entries = Array.from(dt.items || []).filter(i => i.kind === "file")
-    .map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+  const entries = Array.from(dt.items || [])
+    .filter((i) => i.kind === "file")
+    .map((i) => i.webkitGetAsEntry?.())
+    .filter(Boolean);
   if (!entries.length) return Array.from(dt.files || []);
   const out = [];
-  const readAll = reader => new Promise((resolve, reject) => {
-    const all = [];
-    const next = () => reader.readEntries(batch => batch.length ? (all.push(...batch), next()) : resolve(all), reject);
-    next();
-  });
+  const readAll = (reader) =>
+    new Promise((resolve, reject) => {
+      const all = [];
+      const next = () =>
+        reader.readEntries(
+          (batch) => (batch.length ? (all.push(...batch), next()) : resolve(all)),
+          reject
+        );
+      next();
+    });
   const walk = async (entry, prefix) => {
     if (entry.isFile) {
       const file = await new Promise((res, rej) => entry.file(res, rej));
@@ -57,14 +64,23 @@ export async function filesFromDataTransfer(dt) {
   return out;
 }
 
-export const sleep = (ms, signal) => new Promise((res, rej) => {
-  const t = setTimeout(res, ms);
-  signal?.addEventListener("abort", () => { clearTimeout(t); rej(new DOMException("Aborted", "AbortError")); }, { once: true });
-});
+export const sleep = (ms, signal) =>
+  new Promise((res, rej) => {
+    const t = setTimeout(res, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        rej(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true }
+    );
+  });
 
-export const backoff = n => Math.min(30000, 1000 * 2 ** n) * (0.5 + Math.random() / 2);
+export const backoff = (n) => Math.min(30000, 1000 * 2 ** n) * (0.5 + Math.random() / 2);
 
-export const isRetryable = e => e.network || [408, 422, 425, 429, 500, 502, 503, 504].includes(e.status);
+export const isRetryable = (e) =>
+  e.network || [408, 422, 425, 429, 500, 502, 503, 504].includes(e.status);
 
 export async function waitForHost(signal) {
   for (let i = 0; ; i++) {
@@ -89,7 +105,11 @@ export async function postCreate(body, headers, signal, onWait) {
   for (let i = 0; ; i++) {
     try {
       const r = await fetch("/api/transfers", {
-        method: "POST", headers, credentials: "same-origin", signal, body: JSON.stringify(body)
+        method: "POST",
+        headers,
+        credentials: "same-origin",
+        signal,
+        body: JSON.stringify(body),
       });
       if (r.status !== 429 || i >= 60) return r;
       onWait("Waiting for a free transfer slot on the laptop…");
@@ -107,11 +127,18 @@ export async function finishTransfer(session, headers, signal, onProgress = () =
   for (let attempt = 0; ; attempt++) {
     try {
       const r = await fetch(`/api/transfers/${session.id}/complete`, {
-        method: "POST", headers, credentials: "same-origin", signal, body: "{}"
+        method: "POST",
+        headers,
+        credentials: "same-origin",
+        signal,
+        body: "{}",
       });
       if (r.status === 202) {
         try {
-          const stRes = await fetch(`/api/transfers/${session.id}`, { headers: deviceHeaders(), signal });
+          const stRes = await fetch(`/api/transfers/${session.id}`, {
+            headers: deviceHeaders(),
+            signal,
+          });
           if (stRes.ok) {
             const stData = await stRes.json();
             if (stData.verified) onProgress(stData.verified, stData.size);
@@ -121,7 +148,10 @@ export async function finishTransfer(session, headers, signal, onProgress = () =
         continue;
       }
       if (r.status === 409) {
-        const info = await r.clone().json().catch(() => null);
+        const info = await r
+          .clone()
+          .json()
+          .catch(() => null);
         if (info?.error === "chunks_corrupt") return info;
       }
       if (!r.ok) throw Object.assign(new Error(await responseError(r)), { status: r.status });
@@ -142,25 +172,51 @@ export function putChunk(url, body, headers, signal, onProgress) {
     for (const [k, v] of Object.entries(headers)) {
       xhr.setRequestHeader(k, v);
     }
-    xhr.upload.onprogress = e => e.lengthComputable && onProgress(e.loaded);
-    xhr.onload = () => xhr.status < 300 ? resolve()
-      : reject(Object.assign(new Error(xhr.responseText || `HTTP ${xhr.status}`), { status: xhr.status }));
-    xhr.onerror = () => reject(Object.assign(new Error("Lost connection to the laptop"), { network: true }));
-    xhr.ontimeout = () => reject(Object.assign(new Error("Chunk upload timed out"), { network: true }));
-    const abort = () => { xhr.abort(); reject(new DOMException("Aborted", "AbortError")); };
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded);
+    xhr.onload = () =>
+      xhr.status < 300
+        ? resolve()
+        : reject(
+            Object.assign(new Error(xhr.responseText || `HTTP ${xhr.status}`), {
+              status: xhr.status,
+            })
+          );
+    xhr.onerror = () =>
+      reject(Object.assign(new Error("Lost connection to the laptop"), { network: true }));
+    xhr.ontimeout = () =>
+      reject(Object.assign(new Error("Chunk upload timed out"), { network: true }));
+    const abort = () => {
+      xhr.abort();
+      reject(new DOMException("Aborted", "AbortError"));
+    };
     signal.addEventListener("abort", abort, { once: true });
     xhr.onloadend = () => signal.removeEventListener("abort", abort);
     xhr.send(body);
   });
 }
 
-export const xferStats = (window.xferStats = { readMs: 0, hashMs: 0, putMs: 0, chunks: 0, bytes: 0 });
+export const xferStats = (window.xferStats = {
+  readMs: 0,
+  hashMs: 0,
+  putMs: 0,
+  chunks: 0,
+  bytes: 0,
+});
 
-export async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes, onStatus = () => {} }) {
+export async function sendChunks({
+  session,
+  file,
+  offsets,
+  chunkSize,
+  signal,
+  onBytes,
+  onStatus = () => {},
+}) {
   const inner = new AbortController();
   signal.addEventListener("abort", () => inner.abort(), { once: true });
   let cursor = 0;
-  const skipClientHash = !globalThis.crypto?.subtle && safeStorage.getItem("supershare-fast-insecure") === "1";
+  const skipClientHash =
+    !globalThis.crypto?.subtle && safeStorage.getItem("supershare-fast-insecure") === "1";
   const worker = async () => {
     try {
       while (cursor < offsets.length) {
@@ -179,11 +235,18 @@ export async function sendChunks({ session, file, offsets, chunkSize, signal, on
         }
         let sent = 0;
         t = performance.now();
-        for (let failures = 0; ; ) {
+        for (let failures = 0; ;) {
           try {
-            await putChunk(`/api/transfers/${session.id}/chunk`, buf,
+            await putChunk(
+              `/api/transfers/${session.id}/chunk`,
+              buf,
               { ...deviceHeaders(), "X-Chunk-Offset": String(off), ...hashHeaders },
-              inner.signal, loaded => { onBytes(loaded - sent); sent = loaded; });
+              inner.signal,
+              (loaded) => {
+                onBytes(loaded - sent);
+                sent = loaded;
+              }
+            );
             onBytes(buf.byteLength - sent);
             break;
           } catch (e) {
@@ -194,7 +257,8 @@ export async function sendChunks({ session, file, offsets, chunkSize, signal, on
               await sleep(3000, inner.signal);
               continue;
             }
-            if (e.name === "AbortError" || !isRetryable(e) || ++failures > (e.network ? 60 : 8)) throw e;
+            if (e.name === "AbortError" || !isRetryable(e) || ++failures > (e.network ? 60 : 8))
+              throw e;
             if (e.network) {
               onStatus("Connection lost. Waiting for the laptop…");
               await waitForHost(inner.signal);
@@ -214,4 +278,3 @@ export async function sendChunks({ session, file, offsets, chunkSize, signal, on
   };
   await Promise.all(Array.from({ length: Math.min(3, Math.max(1, offsets.length)) }, worker));
 }
-

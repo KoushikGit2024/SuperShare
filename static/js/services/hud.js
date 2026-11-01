@@ -3,7 +3,12 @@
 import { formatBytes, formatDuration } from "./utils.js";
 
 const jobs = new Map();
-let seq = 0, root, badge, drawer, list, timer = 0;
+let seq = 0,
+  root,
+  badge,
+  drawer,
+  list,
+  timer = 0;
 
 function setExpanded(open) {
   drawer.classList.toggle("hidden", !open);
@@ -32,8 +37,12 @@ function ensureDom() {
   root.append(drawer, badge);
   document.body.appendChild(root);
   badge.addEventListener("click", () => setExpanded(drawer.classList.contains("hidden")));
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && !drawer.classList.contains("hidden") && !document.querySelector("dialog[open]")) {
+  document.addEventListener("keydown", (event) => {
+    if (
+      event.key === "Escape" &&
+      !drawer.classList.contains("hidden") &&
+      !document.querySelector("dialog[open]")
+    ) {
       setExpanded(false);
       badge.focus();
     }
@@ -42,7 +51,10 @@ function ensureDom() {
 
 function schedule() {
   if (timer) return;
-  timer = setTimeout(() => { timer = 0; render(); }, 200);
+  timer = setTimeout(() => {
+    timer = 0;
+    render();
+  }, 200);
 }
 
 function rowFor(job) {
@@ -50,11 +62,16 @@ function rowFor(job) {
   li.className = `hud-row ${job.status}`;
   const title = document.createElement("strong");
   title.textContent = job.label;
-  const pct = job.total ? Math.min(100, Math.round(job.done / job.total * 100)) : 0;
+  const pct = job.total ? Math.min(100, Math.round((job.done / job.total) * 100)) : 0;
   const state = document.createElement("span");
-  state.textContent = job.status === "active"
-    ? `${job.kind === "upload" ? "Uploading" : "Downloading"} · ${pct}%${job.rate ? ` · ${formatBytes(job.rate)}/s` : ""}`
-    : job.status === "complete" ? "Finished" : job.status === "failed" ? "Failed" : "Cancelled";
+  state.textContent =
+    job.status === "active"
+      ? `${job.kind === "upload" ? "Uploading" : "Downloading"} · ${pct}%${job.rate ? ` · ${formatBytes(job.rate)}/s` : ""}`
+      : job.status === "complete"
+        ? "Finished"
+        : job.status === "failed"
+          ? "Failed"
+          : "Cancelled";
   const progress = document.createElement("progress");
   progress.max = job.total || 1;
   progress.value = Math.min(job.done, job.total || 1);
@@ -66,7 +83,7 @@ function rowFor(job) {
 function render() {
   const all = [...jobs.values()];
   root.classList.toggle("hidden", !all.length);
-  const active = all.filter(job => job.status === "active");
+  const active = all.filter((job) => job.status === "active");
   const rate = active.reduce((sum, job) => sum + job.rate, 0);
   const remaining = active.reduce((sum, job) => sum + Math.max(0, job.total - job.done), 0);
   badge.textContent = active.length
@@ -83,7 +100,9 @@ export function trackTransfer({ kind, label }) {
   schedule();
   return {
     update({ done, total, rate }) {
-      job.done = done; job.total = total; job.rate = rate || 0;
+      job.done = done;
+      job.total = total;
+      job.rate = rate || 0;
       schedule();
     },
     finish(status) {
@@ -91,8 +110,13 @@ export function trackTransfer({ kind, label }) {
       job.rate = 0;
       if (status === "complete") job.done = job.total;
       schedule();
-      setTimeout(() => { jobs.delete(id); schedule(); }, status === "failed" ? 30000 : 4000);
-    }
+      setTimeout(
+        () => {
+          jobs.delete(id);
+          schedule();
+        },
+        status === "failed" ? 30000 : 4000
+      );
+    },
   };
 }
-

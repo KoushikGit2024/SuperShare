@@ -1,14 +1,99 @@
-<section class="card network-card tab-panel tab-hidden" id="networkSection" role="tabpanel" aria-labelledby="networkTitle">
-      <div class="section-heading"><div><span class="eyebrow">STEP 1 · CONNECT DEVICES</span><h2 id="networkTitle">Connect on the same hotspot</h2><p>If your phone provides the hotspot, connect this laptop to the phone’s hotspot and use the laptop Wi-Fi address below. If this laptop provides the hotspot, connect the phone to Windows Mobile Hotspot and use its address. Internet access is not required.</p></div><div class="network-actions"><a href="/speedtest" target="_blank" class="btn-xs outline" style="text-decoration:none">Run speed test</a><button id="copyConnectionBtn" class="btn-xs outline" type="button" disabled>Copy address</button><button id="copyTlsFingerprintBtn" class="btn-xs outline hidden" type="button">Copy TLS fingerprint</button><button id="showPairQrBtn" class="btn-xs accent hidden" type="button" disabled aria-expanded="false">Show pairing QR</button></div></div>
-      <div id="networkAddresses" class="network-addresses" aria-live="polite">Checking local network addresses…</div>
-      <div id="networkStatus" class="network-status">Checking SuperShare service</div>
-      <div id="networkSecurity" class="network-security" aria-live="polite"></div>
-      <details class="network-help"><summary>Phone cannot connect?</summary><div class="network-help-content"><ol><li>Keep the SuperShare terminal open. It must be listening on TCP port <code>8765</code>.</li><li>Match the address to the hotspot host. If the phone provides the hotspot, connect the laptop to it and use the laptop’s Wi-Fi IPv4 address. If this laptop provides Windows Mobile Hotspot, connect the phone to it and use the Windows hotspot address, usually <code>192.168.137.1</code>.</li><li>Open the exact address shown above, including <code>:<span class="js-port">8765</span></code>. The phone must not use <code>localhost</code>.</li><li>Approve the Windows setup prompt when SuperShare starts. It sets the network profile to Private and adds a TCP rule scoped to local-subnet addresses.</li></ol><p>Do not configure router port forwarding. If both devices are on the same hotspot and the page still times out, check hotspot client isolation. Changing HTTP to HTTPS does not fix a TCP timeout; HTTPS also requires trusting SuperShare’s local certificate on the phone.</p></div></details>
-      <div id="pairQrPanel" class="pair-qr hidden" aria-labelledby="pairQrTitle">
-        <div class="pair-qr-heading"><div><span class="eyebrow">PAIR A BROWSER</span><h3 id="pairQrTitle">Scan to open SuperShare</h3></div><button id="hidePairQrBtn" class="btn-xs outline" type="button"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg> Close</button></div>
-        <div class="pair-qr-content">
-          <div class="pair-qr-frame"><img id="pairQrImage" alt="Pairing QR code. Scan it with a device connected to the same Wi-Fi or hotspot as this laptop."></div>
-          <div class="pair-qr-help"><ol><li>Connect your phone to the same Wi-Fi or hotspot as this laptop.</li><li>Scan the code and open the link.</li><li>Tap Pair with host, then compare the three-word phrase on both screens.</li></ol><div class="pairing-link"><span class="eyebrow">PAIRING LINK</span><code id="pairingUrlText">Loading pairing link…</code><button id="copyPairingUrlBtn" class="btn-xs outline" type="button">Copy pairing link</button></div></div>
+<section
+  class="card network-card tab-panel tab-hidden"
+  id="networkSection"
+  role="tabpanel"
+  aria-labelledby="networkTitle"
+>
+  <div class="section-heading">
+    <div>
+      <span class="eyebrow">STEP 1 · CONNECT DEVICES</span>
+      <h2 id="networkTitle">Connect on the same hotspot</h2>
+      <p>
+        If your phone provides the hotspot, connect this laptop to the phone’s hotspot and use the laptop Wi-Fi address
+        below. If this laptop provides the hotspot, connect the phone to Windows Mobile Hotspot and use its address.
+        Internet access is not required.
+      </p>
+    </div>
+    <div class="network-actions">
+      <a href="/speedtest" target="_blank" class="btn-xs outline" style="text-decoration: none">Run speed test</a>
+      <button id="copyConnectionBtn" class="btn-xs outline" type="button" disabled>Copy address</button>
+      <button id="copyTlsFingerprintBtn" class="btn-xs outline hidden" type="button">Copy TLS fingerprint</button>
+      <button id="showPairQrBtn" class="btn-xs accent hidden" type="button" disabled aria-expanded="false">
+        Show pairing QR
+      </button>
+    </div>
+  </div>
+  <div id="networkAddresses" class="network-addresses" aria-live="polite">Checking local network addresses…</div>
+  <div id="networkStatus" class="network-status">Checking SuperShare service</div>
+  <div id="networkSecurity" class="network-security" aria-live="polite"></div>
+  <details class="network-help">
+    <summary>Phone cannot connect?</summary>
+    <div class="network-help-content">
+      <ol>
+        <li>
+          Keep the SuperShare terminal open. It must be listening on TCP port
+          <code>8765</code>
+          .
+        </li>
+        <li>
+          Match the address to the hotspot host. If the phone provides the hotspot, connect the laptop to it and use the
+          laptop’s Wi-Fi IPv4 address. If this laptop provides Windows Mobile Hotspot, connect the phone to it and use
+          the Windows hotspot address, usually
+          <code>192.168.137.1</code>
+          .
+        </li>
+        <li>
+          Open the exact address shown above, including
+          <code>
+            :
+            <span class="js-port">8765</span>
+          </code>
+          . The phone must not use
+          <code>localhost</code>
+          .
+        </li>
+        <li>
+          Approve the Windows setup prompt when SuperShare starts. It sets the network profile to Private and adds a TCP
+          rule scoped to local-subnet addresses.
+        </li>
+      </ol>
+      <p>
+        Do not configure router port forwarding. If both devices are on the same hotspot and the page still times out,
+        check hotspot client isolation. Changing HTTP to HTTPS does not fix a TCP timeout; HTTPS also requires trusting
+        SuperShare’s local certificate on the phone.
+      </p>
+    </div>
+  </details>
+  <div id="pairQrPanel" class="pair-qr hidden" aria-labelledby="pairQrTitle">
+    <div class="pair-qr-heading">
+      <div>
+        <span class="eyebrow">PAIR A BROWSER</span>
+        <h3 id="pairQrTitle">Scan to open SuperShare</h3>
+      </div>
+      <button id="hidePairQrBtn" class="btn-xs outline" type="button">
+        <svg class="icon" aria-hidden="true"><use href="#i-close" /></svg>
+        Close
+      </button>
+    </div>
+    <div class="pair-qr-content">
+      <div class="pair-qr-frame">
+        <img
+          id="pairQrImage"
+          alt="Pairing QR code. Scan it with a device connected to the same Wi-Fi or hotspot as this laptop."
+        />
+      </div>
+      <div class="pair-qr-help">
+        <ol>
+          <li>Connect your phone to the same Wi-Fi or hotspot as this laptop.</li>
+          <li>Scan the code and open the link.</li>
+          <li>Tap Pair with host, then compare the three-word phrase on both screens.</li>
+        </ol>
+        <div class="pairing-link">
+          <span class="eyebrow">PAIRING LINK</span>
+          <code id="pairingUrlText">Loading pairing link…</code>
+          <button id="copyPairingUrlBtn" class="btn-xs outline" type="button">Copy pairing link</button>
         </div>
       </div>
-    </section>
+    </div>
+  </div>
+</section>

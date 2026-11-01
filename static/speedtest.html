@@ -1,24 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SuperShare speed test</title>
-  <link rel="stylesheet" href="/static/css/style.css">
-</head>
-<body>
-  <div class="container">
-    <section class="card">
-      <h2>SuperShare speed test</h2>
-      <p class="section-description">Run this on the phone and on the laptop. It separates link speed from app overhead.</p>
-      <div class="btn-grid">
-        <button id="run" class="btn primary" type="button">Run tests</button>
-        <label class="btn secondary">Pick a file to time reads<input id="file" type="file" hidden></label>
-      </div>
-      <pre id="out" class="modal-path" style="white-space:pre-wrap" aria-live="polite">Ready.</pre>
-    </section>
-  </div>
-  <script type="module" src="/static/js/speedtest.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SuperShare speed test</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <section class="card">
+        <h2>SuperShare speed test</h2>
+        <p class="section-description">
+          Run this on the phone and on the laptop. It separates link speed from app overhead.
+        </p>
+        <div class="btn-grid">
+          <button id="run" class="btn primary" type="button">Run tests</button>
+          <label class="btn secondary">
+            Pick a file to time reads
+            <input id="file" type="file" hidden />
+          </label>
+        </div>
+        <pre id="out" class="modal-path" style="white-space: pre-wrap" aria-live="polite">Ready.</pre>
+      </section>
+    </div>
+    <script type="module" src="/static/js/speedtest.js"></script>
+  </body>
 </html>
-

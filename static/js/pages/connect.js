@@ -24,7 +24,7 @@ export async function refreshNetworkInfo() {
     addresses.replaceChildren();
 
     if (info.interfaces?.length) {
-      info.interfaces.forEach(item => {
+      info.interfaces.forEach((item) => {
         const portPart = info.port && ![80, 443].includes(info.port) ? `:${info.port}` : "";
         const url = `${info.scheme}://${item.address}${portPart}/`;
         const row = document.createElement("div");
@@ -58,7 +58,8 @@ export async function refreshNetworkInfo() {
     } else {
       const empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.textContent = "No hotspot or local network address detected. Turn on your laptop hotspot or connect to Wi-Fi.";
+      empty.textContent =
+        "No hotspot or local network address detected. Turn on your laptop hotspot or connect to Wi-Fi.";
       addresses.appendChild(empty);
     }
 
@@ -73,9 +74,10 @@ export async function refreshNetworkInfo() {
       const diagnosticResponse = await fetch("/api/diagnostics", { cache: "no-store" });
       if (diagnosticResponse.ok) {
         const diagnostic = await diagnosticResponse.json();
-        extra = diagnostic.storage?.available_bytes != null
-          ? ` · ${formatBytes(diagnostic.storage.available_bytes)} free on receive drive${diagnostic.storage.reserved_bytes ? ` · ${formatBytes(diagnostic.storage.reserved_bytes)} reserved for active transfers` : ""}`
-          : "";
+        extra =
+          diagnostic.storage?.available_bytes != null
+            ? ` · ${formatBytes(diagnostic.storage.available_bytes)} free on receive drive${diagnostic.storage.reserved_bytes ? ` · ${formatBytes(diagnostic.storage.reserved_bytes)} reserved for active transfers` : ""}`
+            : "";
       }
     }
     status.textContent = connection
@@ -94,11 +96,18 @@ export function initConnectPage() {
   document.getElementById("copyConnectionBtn")?.addEventListener("click", async () => {
     try {
       if (!preferredConnectionUrl) await refreshNetworkInfo();
-      if (!preferredConnectionUrl) throw new Error("Turn on the laptop hotspot or connect this laptop to Wi-Fi first.");
+      if (!preferredConnectionUrl)
+        throw new Error("Turn on the laptop hotspot or connect this laptop to Wi-Fi first.");
       await navigator.clipboard.writeText(preferredConnectionUrl);
-      showNotice("Connection address copied. Open it on a device connected to this hotspot.", "success");
+      showNotice(
+        "Connection address copied. Open it on a device connected to this hotspot.",
+        "success"
+      );
     } catch (_) {
-      showNotice("Could not copy connection address. Select and copy it from the Network section.", "error");
+      showNotice(
+        "Could not copy connection address. Select and copy it from the Network section.",
+        "error"
+      );
     }
   });
 
@@ -112,14 +121,16 @@ export function initConnectPage() {
         toggle.textContent = "Show pairing QR";
         return;
       }
-      if (!preferredConnectionUrl) throw new Error("No hotspot address is available yet. Turn on the hotspot and refresh.");
+      if (!preferredConnectionUrl)
+        throw new Error("No hotspot address is available yet. Turn on the hotspot and refresh.");
       const response = await fetch("/api/pairing-qr", { cache: "no-store" });
       if (!response.ok) throw new Error(await responseError(response));
       const image = document.getElementById("pairQrImage");
       if (image.dataset.objectUrl) URL.revokeObjectURL(image.dataset.objectUrl);
       image.dataset.objectUrl = URL.createObjectURL(await response.blob());
       image.src = image.dataset.objectUrl;
-      document.getElementById("pairingUrlText").textContent = response.headers.get("X-SuperShare-Pairing-URL") || preferredConnectionUrl;
+      document.getElementById("pairingUrlText").textContent =
+        response.headers.get("X-SuperShare-Pairing-URL") || preferredConnectionUrl;
       panel.classList.remove("hidden");
       toggle.setAttribute("aria-expanded", "true");
       toggle.textContent = "Hide pairing QR";
@@ -149,10 +160,12 @@ export function initConnectPage() {
       const response = await fetch("/api/network", { cache: "no-store" });
       const info = await response.json();
       await navigator.clipboard.writeText(info.ca_fingerprint || "");
-      showNotice("TLS CA fingerprint copied. Compare it with the value printed in the host terminal.", "success");
+      showNotice(
+        "TLS CA fingerprint copied. Compare it with the value printed in the host terminal.",
+        "success"
+      );
     } catch (_) {
       showNotice("Could not copy the TLS fingerprint.", "error");
     }
   });
 }
-

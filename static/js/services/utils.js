@@ -2,9 +2,27 @@
 // Safe storage, formatting, DOM helpers, notice banner, and accessible action dialogs
 
 export const safeStorage = {
-  getItem(k) { try { return localStorage.getItem(k); } catch (_) { return this[k] || null; } },
-  setItem(k, v) { try { localStorage.setItem(k, v); } catch (_) { this[k] = String(v); } },
-  removeItem(k) { try { localStorage.removeItem(k); } catch (_) { delete this[k]; } }
+  getItem(k) {
+    try {
+      return localStorage.getItem(k);
+    } catch (_) {
+      return this[k] || null;
+    }
+  },
+  setItem(k, v) {
+    try {
+      localStorage.setItem(k, v);
+    } catch (_) {
+      this[k] = String(v);
+    }
+  },
+  removeItem(k) {
+    try {
+      localStorage.removeItem(k);
+    } catch (_) {
+      delete this[k];
+    }
+  },
 };
 
 export function formatBytes(bytes) {
@@ -36,12 +54,14 @@ const SHA_K = new Int32Array([
   0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
   0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
   0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
 function sha256Js(buffer) {
   const data = new Uint8Array(buffer);
-  const H = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const H = new Int32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+  ]);
   const W = new Int32Array(64);
   const len = data.length;
   const body = len - (len % 64);
@@ -58,34 +78,55 @@ function sha256Js(buffer) {
       W[i] = (src[j] << 24) | (src[j + 1] << 16) | (src[j + 2] << 8) | src[j + 3];
     }
     for (let i = 16; i < 64; i++) {
-      const x = W[i - 15], y = W[i - 2];
+      const x = W[i - 15],
+        y = W[i - 2];
       const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
       const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
       W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
     }
-    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    let a = H[0],
+      b = H[1],
+      c = H[2],
+      d = H[3],
+      e = H[4],
+      f = H[5],
+      g = H[6],
+      h = H[7];
     for (let i = 0; i < 64; i++) {
       const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
       const t1 = (h + S1 + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
       const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
       const t2 = (S0 + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + t1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (t1 + t2) | 0;
     }
-    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
-    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+    H[0] = (H[0] + a) | 0;
+    H[1] = (H[1] + b) | 0;
+    H[2] = (H[2] + c) | 0;
+    H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0;
+    H[5] = (H[5] + f) | 0;
+    H[6] = (H[6] + g) | 0;
+    H[7] = (H[7] + h) | 0;
   };
 
   for (let off = 0; off < body; off += 64) compress(data, off);
   for (let off = 0; off < tail.length; off += 64) compress(tail, off);
-  return Array.from(H, v => (v >>> 0).toString(16).padStart(8, "0")).join("");
+  return Array.from(H, (v) => (v >>> 0).toString(16).padStart(8, "0")).join("");
 }
 
 export async function sha256Buf(buffer) {
   if (globalThis.crypto?.subtle) {
     const digest = await crypto.subtle.digest("SHA-256", buffer);
-    return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, "0")).join("");
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
   }
-  await new Promise(resolve => setTimeout(resolve, 0)); // let the UI paint before a long synchronous hash
+  await new Promise((resolve) => setTimeout(resolve, 0)); // let the UI paint before a long synchronous hash
   return sha256Js(buffer);
 }
 
@@ -111,16 +152,25 @@ export function showNotice(message, type = "info") {
   close.className = "notice-close";
   close.setAttribute("aria-label", "Dismiss message");
   close.textContent = "×";
-  close.onclick = () => { clearTimeout(showNotice.timer); notice.classList.add("hidden"); };
+  close.onclick = () => {
+    clearTimeout(showNotice.timer);
+    notice.classList.add("hidden");
+  };
   notice.replaceChildren(text, close);
   clearTimeout(showNotice.timer);
-  showNotice.timer = setTimeout(() => notice.classList.add("hidden"), type === "error" ? 12000 : 5000);
+  showNotice.timer = setTimeout(
+    () => notice.classList.add("hidden"),
+    type === "error" ? 12000 : 5000
+  );
 }
 
 export function actionDialog({ title, message, inputLabel = "", inputValue = "", actions = [] }) {
   const dialog = document.getElementById("actionDialog");
   if (!dialog?.showModal) {
-    showNotice("This browser does not support the action dialog. Update browser and try again.", "error");
+    showNotice(
+      "This browser does not support the action dialog. Update browser and try again.",
+      "error"
+    );
     return Promise.resolve(null);
   }
   document.getElementById("actionDialogTitle").textContent = title;
@@ -132,31 +182,42 @@ export function actionDialog({ title, message, inputLabel = "", inputValue = "",
   input.value = inputValue;
   const actionList = document.getElementById("actionDialogActions");
   actionList.replaceChildren();
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     let settled = false;
-    const finish = value => {
+    const finish = (value) => {
       if (settled) return;
       settled = true;
       dialog.removeEventListener("close", onClose);
       if (dialog.open) dialog.close();
       resolve(value);
     };
-    const onClose = () => { if (!settled) { settled = true; resolve(null); } };
+    const onClose = () => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    };
     dialog.addEventListener("close", onClose, { once: true });
     const form = dialog.querySelector("form");
-    form.onsubmit = event => event.preventDefault();
-    input.onkeydown = event => {
+    form.onsubmit = (event) => event.preventDefault();
+    input.onkeydown = (event) => {
       if (event.key === "Enter" && inputLabel) {
         event.preventDefault();
         actionList.querySelector("button:last-child")?.click();
       }
     };
-    actions.forEach(action => {
+    actions.forEach((action) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = action.danger ? "btn-sm danger" : action.primary ? "btn-sm accent" : "btn-sm outline";
+      button.className = action.danger
+        ? "btn-sm danger"
+        : action.primary
+          ? "btn-sm accent"
+          : "btn-sm outline";
       button.textContent = action.label;
-      button.addEventListener("click", () => finish(action.cancel ? null : inputLabel ? input.value.trim() || null : action.value));
+      button.addEventListener("click", () =>
+        finish(action.cancel ? null : inputLabel ? input.value.trim() || null : action.value)
+      );
       actionList.appendChild(button);
     });
     dialog.showModal();
@@ -166,21 +227,25 @@ export function actionDialog({ title, message, inputLabel = "", inputValue = "",
 
 export function confirmAction(title, message, danger = false) {
   return actionDialog({
-    title, message,
+    title,
+    message,
     actions: [
       { label: "Keep current", value: false },
-      { label: "Continue", value: true, primary: !danger, danger }
-    ]
+      { label: "Continue", value: true, primary: !danger, danger },
+    ],
   });
 }
 
 export function editText(title, message, label, value = "") {
   return actionDialog({
-    title, message, inputLabel: label, inputValue: value,
+    title,
+    message,
+    inputLabel: label,
+    inputValue: value,
     actions: [
       { label: "Cancel", value: null, cancel: true },
-      { label: "Save", value: true, primary: true }
-    ]
+      { label: "Save", value: true, primary: true },
+    ],
   });
 }
 
@@ -195,19 +260,24 @@ export async function responseError(response) {
 }
 
 export function listBusy(list) {
-  return Boolean(list && (list.contains(document.activeElement) || list.querySelector("details[open]")));
+  return Boolean(
+    list && (list.contains(document.activeElement) || list.querySelector("details[open]"))
+  );
 }
 
 export function friendlyError(e) {
   if (e.name === "AbortError") return "Cancelled";
-  const looksOffline = e.network || (e instanceof TypeError && /fetch|network|load failed/i.test(e.message || ""));
-  if (looksOffline) return "Lost connection to the laptop. Check both devices are on the same hotspot and mobile data isn't taking over, then select the file again to resume.";
+  const looksOffline =
+    e.network || (e instanceof TypeError && /fetch|network|load failed/i.test(e.message || ""));
+  if (looksOffline)
+    return "Lost connection to the laptop. Check both devices are on the same hotspot and mobile data isn't taking over, then select the file again to resume.";
   if (e instanceof TypeError) return `Browser error: ${e.message}`;
-  if (["NotReadableError", "NotFoundError"].includes(e.name)) return "The browser can no longer read this file (moved, deleted or permission revoked).";
+  if (["NotReadableError", "NotFoundError"].includes(e.name))
+    return "The browser can no longer read this file (moved, deleted or permission revoked).";
   if (e.status === 507) return "The laptop's receive drive is full.";
-  if (e.status === 429) return "The host is already running its maximum number of transfers. Wait or cancel a stalled one.";
+  if (e.status === 429)
+    return "The host is already running its maximum number of transfers. Wait or cancel a stalled one.";
   if (e.status === 403) return "The host has not granted this browser send access.";
   if (e.status === 409) return `The host stopped this transfer: ${e.message}`;
   return e.message || "Unknown error";
 }
-

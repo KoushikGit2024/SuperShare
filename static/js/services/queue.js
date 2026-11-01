@@ -22,29 +22,41 @@ export function createQueueController(list) {
     return el;
   };
   const rows = () => Array.from(list.children);
-  const stateOf = row => row.dataset.state || "active";
+  const stateOf = (row) => row.dataset.state || "active";
 
   const retryBtn = button("Retry all failed", () => {
-    rows().filter(r => stateOf(r) === "failed" && r._retry).forEach(r => { const fn = r._retry; r.remove(); fn(); });
+    rows()
+      .filter((r) => stateOf(r) === "failed" && r._retry)
+      .forEach((r) => {
+        const fn = r._retry;
+        r.remove();
+        fn();
+      });
   });
   const clearBtn = button("Clear finished", () => {
-    rows().filter(r => ["complete", "cancelled", "skipped"].includes(stateOf(r))).forEach(r => r.remove());
+    rows()
+      .filter((r) => ["complete", "cancelled", "skipped"].includes(stateOf(r)))
+      .forEach((r) => r.remove());
   });
   const dismissBtn = button("Dismiss", () => {
-    rows().filter(r => FINISHED.has(stateOf(r))).forEach(r => r.remove());
+    rows()
+      .filter((r) => FINISHED.has(stateOf(r)))
+      .forEach((r) => r.remove());
   });
   bar.append(summary, retryBtn, clearBtn, dismissBtn);
   list.before(bar);
 
   function refresh() {
     const all = rows();
-    const finished = all.filter(r => FINISHED.has(stateOf(r)));
+    const finished = all.filter((r) => FINISHED.has(stateOf(r)));
     if (all.length > MAX_ROWS) {
-      finished.sort((a, b) => Number(a.dataset.finishedAt || 0) - Number(b.dataset.finishedAt || 0))
-        .slice(0, all.length - MAX_ROWS).forEach(r => r.remove());
+      finished
+        .sort((a, b) => Number(a.dataset.finishedAt || 0) - Number(b.dataset.finishedAt || 0))
+        .slice(0, all.length - MAX_ROWS)
+        .forEach((r) => r.remove());
       return; // removal triggers the observer, which calls refresh again
     }
-    const count = s => all.filter(r => stateOf(r) === s).length;
+    const count = (s) => all.filter((r) => stateOf(r) === s).length;
     const active = all.length - finished.length;
     const done = count("complete");
     const failed = count("failed");
@@ -88,7 +100,8 @@ export function createQueueController(list) {
     if (FINISHED.has(state)) {
       row.dataset.finishedAt = String(Date.now());
       ensureActions(row);
-      if (state === "complete") row._collapseTimer = setTimeout(() => row.classList.add("collapsed"), COLLAPSE_AFTER_MS);
+      if (state === "complete")
+        row._collapseTimer = setTimeout(() => row.classList.add("collapsed"), COLLAPSE_AFTER_MS);
     }
     refresh();
   }
@@ -101,11 +114,13 @@ export function createQueueController(list) {
     retry.type = "button";
     retry.className = "btn-xs outline queue-row-retry";
     retry.textContent = "Retry";
-    retry.onclick = () => { row.remove(); fn(); };
+    retry.onclick = () => {
+      row.remove();
+      fn();
+    };
     actions.prepend(retry);
     refresh();
   }
 
   return { setState, setRetry, refresh };
 }
-

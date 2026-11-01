@@ -8,7 +8,27 @@ export const PREVIEW_TYPES = {
   video: new Set(["mp4", "webm", "ogg", "mov", "mkv"]),
   audio: new Set(["mp3", "wav", "ogg", "m4a", "flac", "aac"]),
   pdf: new Set(["pdf"]),
-  text: new Set(["txt", "md", "json", "py", "js", "html", "css", "csv", "log", "xml", "sh", "ps1", "yaml", "yml", "ini", "sql", "bat", "env", "ts"])
+  text: new Set([
+    "txt",
+    "md",
+    "json",
+    "py",
+    "js",
+    "html",
+    "css",
+    "csv",
+    "log",
+    "xml",
+    "sh",
+    "ps1",
+    "yaml",
+    "yml",
+    "ini",
+    "sql",
+    "bat",
+    "env",
+    "ts",
+  ]),
 };
 
 export function getFileExtension(filename) {
@@ -18,7 +38,7 @@ export function getFileExtension(filename) {
 
 export function canPreviewFile(filename) {
   const ext = getFileExtension(filename);
-  return Object.values(PREVIEW_TYPES).some(set => set.has(ext));
+  return Object.values(PREVIEW_TYPES).some((set) => set.has(ext));
 }
 
 export async function openFilePreview(relPath, filename, size) {
@@ -104,7 +124,10 @@ export function closeFilePreview() {
   const content = document.getElementById("previewContent");
   if (content) {
     const media = content.querySelectorAll("video, audio");
-    media.forEach(m => { m.pause(); m.src = ""; });
+    media.forEach((m) => {
+      m.pause();
+      m.src = "";
+    });
     content.replaceChildren();
   }
   modal.classList.add("hidden");
@@ -113,13 +136,12 @@ export function closeFilePreview() {
 export function initPreviewListeners() {
   document.getElementById("closePreviewBtn")?.addEventListener("click", closeFilePreview);
   const modal = document.getElementById("previewModal");
-  modal?.addEventListener("click", event => {
+  modal?.addEventListener("click", (event) => {
     if (event.target.id === "previewModal") closeFilePreview();
   });
-  document.addEventListener("keydown", event => {
+  document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !modal?.classList.contains("hidden")) {
       closeFilePreview();
     }
   });
 }
-

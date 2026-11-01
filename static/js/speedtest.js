@@ -3,7 +3,9 @@ import { sha256Buf } from "./services/utils.js";
 
 const MIB = 1024 * 1024;
 const out = document.getElementById("out");
-const log = line => { out.textContent += `\n${line}`; };
+const log = (line) => {
+  out.textContent += `\n${line}`;
+};
 const rate = (bytes, ms) => `${(bytes / MIB / (ms / 1000)).toFixed(2)} MB/s`;
 
 async function testHash() {
@@ -11,13 +13,19 @@ async function testHash() {
   const n = 8;
   const t0 = performance.now();
   for (let i = 0; i < n; i++) await sha256Buf(buf);
-  log(`client SHA-256 (${globalThis.crypto?.subtle ? "native" : "JS fallback"}): ${rate(n * 4 * MIB, performance.now() - t0)}`);
+  log(
+    `client SHA-256 (${globalThis.crypto?.subtle ? "native" : "JS fallback"}): ${rate(n * 4 * MIB, performance.now() - t0)}`
+  );
 }
 
 async function testDown() {
   const t0 = performance.now();
   let got = 0;
-  const response = await fetch("/api/speedtest-down?mb=64", { headers: deviceHeaders(), credentials: "same-origin", cache: "no-store" });
+  const response = await fetch("/api/speedtest-down?mb=64", {
+    headers: deviceHeaders(),
+    credentials: "same-origin",
+    cache: "no-store",
+  });
   if (!response.ok) throw new Error(`download test failed (${response.status})`);
   const reader = response.body.getReader();
   for (;;) {
@@ -30,8 +38,10 @@ async function testDown() {
 
 async function post(mb) {
   const response = await fetch("/api/speedtest-up", {
-    method: "POST", headers: deviceHeaders(), credentials: "same-origin",
-    body: new Blob([new Uint8Array(mb * MIB)])
+    method: "POST",
+    headers: deviceHeaders(),
+    credentials: "same-origin",
+    body: new Blob([new Uint8Array(mb * MIB)]),
   });
   if (!response.ok) throw new Error(`upload test failed (${response.status})`);
   return response.json();
@@ -59,12 +69,22 @@ async function testRead(file) {
 
 document.getElementById("run").addEventListener("click", async () => {
   out.textContent = "Running…";
-  log(`isSecureContext=${window.isSecureContext}  crypto.subtle=${Boolean(globalThis.crypto?.subtle)}`);
+  log(
+    `isSecureContext=${window.isSecureContext}  crypto.subtle=${Boolean(globalThis.crypto?.subtle)}`
+  );
   log(`UA: ${navigator.userAgent}`);
   log(`effectiveType: ${navigator.connection?.effectiveType || "n/a"}`);
-  for (const step of [testHash, testDown, testUp, () => testRead(document.getElementById("file").files[0])]) {
-    try { await step(); } catch (error) { log(`ERROR: ${error.message}`); }
+  for (const step of [
+    testHash,
+    testDown,
+    testUp,
+    () => testRead(document.getElementById("file").files[0]),
+  ]) {
+    try {
+      await step();
+    } catch (error) {
+      log(`ERROR: ${error.message}`);
+    }
   }
   log(`Timings from last real upload: ${JSON.stringify(window.xferStats || "none yet")}`);
 });
-

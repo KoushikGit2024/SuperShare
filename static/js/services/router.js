@@ -7,7 +7,7 @@ const ROUTE_SECTIONS = {
   "/connect": "networkSection",
   "/devices": "devicesSection",
   "/activity": "transfersSection",
-  "/storage": "storageMgrSection"
+  "/storage": "storageMgrSection",
 };
 
 const SECTION_ROUTES = Object.fromEntries(
@@ -24,7 +24,11 @@ export function onRouteChanged(fn) {
 
 function notifyRoute(sectionId, path) {
   for (const fn of listeners) {
-    try { fn(sectionId, path); } catch (e) { console.error("Router listener error:", e); }
+    try {
+      fn(sectionId, path);
+    } catch (e) {
+      console.error("Router listener error:", e);
+    }
   }
 }
 
@@ -49,14 +53,14 @@ export function navigateTo(sectionId, pushHistory = true) {
 
   activeTabId = sectionId;
 
-  tabs.forEach(tab => {
+  tabs.forEach((tab) => {
     const isTarget = tab.dataset.tab === sectionId;
     tab.classList.toggle("active", isTarget);
     tab.setAttribute("aria-selected", isTarget ? "true" : "false");
     tab.setAttribute("tabindex", isTarget ? "0" : "-1");
   });
 
-  panels.forEach(panel => {
+  panels.forEach((panel) => {
     const isTarget = panel.id === sectionId;
     panel.classList.toggle("tab-hidden", !isTarget);
   });
@@ -79,7 +83,7 @@ export function initRouter() {
       navigateTo(tab.dataset.tab, true);
     });
 
-    tab.addEventListener("keydown", event => {
+    tab.addEventListener("keydown", (event) => {
       let nextIndex = null;
       if (event.key === "ArrowRight") nextIndex = (idx + 1) % tabs.length;
       else if (event.key === "ArrowLeft") nextIndex = (idx - 1 + tabs.length) % tabs.length;
@@ -94,13 +98,13 @@ export function initRouter() {
     });
   });
 
-  window.addEventListener("popstate", event => {
+  window.addEventListener("popstate", (event) => {
     const sec = event.state?.sectionId || routeFromLocation();
     navigateTo(sec, false);
   });
 
   // Drag & drop automatically switches to send
-  window.addEventListener("dragenter", event => {
+  window.addEventListener("dragenter", (event) => {
     if (event.dataTransfer?.types?.includes("Files") && activeTabId !== "sendSection") {
       navigateTo("sendSection", true);
     }
@@ -110,4 +114,3 @@ export function initRouter() {
   const initialSection = routeFromLocation();
   navigateTo(initialSection, false);
 }
-
