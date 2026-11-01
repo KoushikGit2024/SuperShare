@@ -124,29 +124,32 @@ def configure_hotspot_firewall_rule(port: int) -> int:
     rule_name = f"SuperShare local TCP {port} (Private profile)"
     old_rule_name = f"SuperShare local TCP {port} (Public profile)"
     old_any_rule_name = f"SuperShare local TCP {port} (Local subnet)"
+    # The hotspot adapter (192.168.137.x) often cannot be set to Private profile.
+    # Use Profile=Any + RemoteAddress=Any for port 80 (safe: portproxy only forwards to localhost).
+    # Port 8765 also uses Any profile so phones on Public hotspot networks can reach it.
     command = (
-        "$ErrorActionPreference = 'Stop'; "
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        # Try to mark the main Wi-Fi as Private (best effort, ignore failures)
         "$active = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -and $_.IPv4Address } | Select-Object -First 1; "
         "if ($active) { "
-        "$profile = Get-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -ErrorAction SilentlyContinue; "
-        "if ($profile -and $profile.NetworkCategory -ne 'Private') { "
-        "Set-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -NetworkCategory Private } }; "
-        "$hotspotProfiles = Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' }; "
-        "foreach ($profile in $hotspotProfiles) { if ($profile.NetworkCategory -ne 'Private') { "
-        "Set-NetConnectionProfile -InterfaceIndex $profile.InterfaceIndex -NetworkCategory Private } }; "
-        f"Get-NetFirewallRule -DisplayName '{old_rule_name}' -ErrorAction SilentlyContinue "
-        "| Remove-NetFirewallRule; "
-        f"Get-NetFirewallRule -DisplayName '{old_any_rule_name}' -ErrorAction SilentlyContinue "
-        "| Remove-NetFirewallRule; "
-        "$ErrorActionPreference = 'Stop'; "
-        "Get-NetConnectionProfile | Where-Object { $_.InterfaceAlias -like 'Local Area Connection*' -and $_.NetworkCategory -ne 'Private' } "
-        "| ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private }; "
+        "  $profile = Get-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -ErrorAction SilentlyContinue; "
+        "  if ($profile -and $profile.NetworkCategory -ne 'Private') { "
+        "    Set-NetConnectionProfile -InterfaceIndex $active.InterfaceIndex -NetworkCategory Private -ErrorAction SilentlyContinue } }; "
+        # Remove old rules
+        f"Get-NetFirewallRule -DisplayName '{old_rule_name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
+        f"Get-NetFirewallRule -DisplayName '{old_any_rule_name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
         f"Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
-        f"New-NetFirewallRule -DisplayName '{rule_name}' -Direction Inbound -Action Allow -Protocol TCP "
-        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Private | Out-Null; "
         "Get-NetFirewallRule -DisplayName 'SuperShare port 80 proxy (Private profile)' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
-        "New-NetFirewallRule -DisplayName 'SuperShare port 80 proxy (Private profile)' -Direction Inbound -Action Allow -Protocol TCP "
-        "-LocalPort 80 -RemoteAddress LocalSubnet -Profile Private | Out-Null; "
+        "Get-NetFirewallRule -DisplayName 'SuperShare TCP 80 Hotspot' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
+        "Get-NetFirewallRule -DisplayName 'SuperShare TCP 8765 Hotspot' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
+        "$ErrorActionPreference = 'Stop'; "
+        # Port 8765 — Any profile so hotspot (Public) phones can reach the server directly
+        f"New-NetFirewallRule -DisplayName '{rule_name}' -Direction Inbound -Action Allow -Protocol TCP "
+        f"-LocalPort {port} -RemoteAddress Any -Profile Any | Out-Null; "
+        # Port 80 — Any profile, Any remote (portproxy only binds to localhost on the backend)
+        "New-NetFirewallRule -DisplayName 'SuperShare TCP 80 Hotspot' -Direction Inbound -Action Allow -Protocol TCP "
+        "-LocalPort 80 -RemoteAddress Any -Profile Any | Out-Null; "
+        # Setup portproxy
         "netsh interface portproxy delete v4tov4 listenport=80 listenaddress=0.0.0.0 2>$null; "
         f"netsh interface portproxy add v4tov4 listenport=80 listenaddress=0.0.0.0 connectport={port} connectaddress=127.0.0.1 | Out-Null"
     )
@@ -191,15 +194,13 @@ def is_port_80_proxy_active(target_port: int) -> bool:
 
 
 def local_subnet_firewall_rule_exists(port: int) -> bool:
-    rule_name = f"SuperShare local TCP {port} (Private profile)"
+    """Check that SuperShare-owned Any-profile port rule AND port-80 proxy are both in place."""
+    hotspot_rule = f"SuperShare TCP {port} Hotspot"
+    hotspot_rule_80 = "SuperShare TCP 80 Hotspot"
     check = (
-        f"$r = Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue; "
-        "foreach ($x in $r) { "
-        "$p = $x | Get-NetFirewallPortFilter; "
-        "$a = $x | Get-NetFirewallAddressFilter; "
-        f"if ($x.Enabled -eq 'True' -and $x.Direction -eq 'Inbound' -and $x.Action -eq 'Allow' -and "
-        f"[string]$p.Protocol -eq 'TCP' -and [string]$p.LocalPort -eq '{port}' -and "
-        "[string]$a.RemoteAddress -eq 'LocalSubnet') { exit 0 } }; exit 1"
+        f"$r = Get-NetFirewallRule -DisplayName '{hotspot_rule}' -ErrorAction SilentlyContinue; "
+        f"$r80 = Get-NetFirewallRule -DisplayName '{hotspot_rule_80}' -ErrorAction SilentlyContinue; "
+        "if ($r -and $r.Enabled -eq 'True' -and $r80 -and $r80.Enabled -eq 'True') { exit 0 } else { exit 1 }"
     )
     try:
         result = subprocess.run(

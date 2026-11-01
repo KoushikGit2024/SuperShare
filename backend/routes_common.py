@@ -254,9 +254,13 @@ def _select_hotspot_interface(interfaces):
         if address.version != 4 or address.is_loopback or address.is_link_local or address.is_multicast or not address.is_private:
             continue
         name = str(item.get("name", "")).lower()
-        if name.startswith(("lo", "br-")) or any(m in name for m in _EXCLUDED_ADAPTERS):
+        # Skip loopback/bridge adapters; be careful not to exclude "local area connection*"
+        if name == "lo" or name.startswith("br-") or any(m in name for m in _EXCLUDED_ADAPTERS):
             continue
-        hosted = str(address) == "192.168.137.1" or "local area connection*" in name
+        # Windows Mobile Hotspot adapter: "192.168.137.1" or "local area connection*"
+        hosted = str(address) == "192.168.137.1" or (
+            "local area connection" in name and "192.168.137" in str(address)
+        ) or ("local area connection" in name and address.packed[0:3] == bytes([192, 168, 137]))
         wireless = any(m in name for m in ("wi-fi", "wifi", "wireless", "wlan", "wlp", "wlo", "wlx")) or name in ("en0", "en1")
         rank, kind = (0, "Windows hotspot") if hosted else (1, "Wi-Fi / hotspot") if wireless else (2, "Local network")
         ranked.append((rank, name, item["address"], {**item, "kind": kind}))
