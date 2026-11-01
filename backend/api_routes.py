@@ -23,6 +23,7 @@ import hmac
 import secrets
 import socket
 import shutil
+import aiohttp
 from aiohttp import web
 
 from .config import STATE, CHUNK_SIZE, MAX_CONCURRENT_TRANSFERS, PAIRING_CODE, save_persistent_state, request_save, record_transfer, ACTIVE_SLOT_STATES, STALE_TRANSFER_SECONDS
@@ -271,10 +272,18 @@ async def _stream_zip(request, rel_paths, zip_name):
                 break
             if isinstance(item, BaseException):
                 raise item
-            await resp.write(item)
-            sent += len(item)
-        await resp.write_eof()
-        await asyncio.to_thread(record_transfer, device_id, zip_name, sent, "completed", "Sent ZIP", device_id, "send")
+            try:
+                await resp.write(item)
+                sent += len(item)
+            except (ConnectionError, ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
+                # Client disconnected or cancelled the stream
+                await asyncio.to_thread(record_transfer, device_id, zip_name, sent, "cancelled", "Client cancelled download", device_id, "send")
+                return resp
+        try:
+            await resp.write_eof()
+            await asyncio.to_thread(record_transfer, device_id, zip_name, sent, "completed", "Sent ZIP", device_id, "send")
+        except (ConnectionError, ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
+            pass
     finally:
         stop.set()
         await asyncio.gather(worker, return_exceptions=True)

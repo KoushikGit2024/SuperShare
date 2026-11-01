@@ -1,0 +1,28 @@
+<!-- File & Folder Explorer -->
+    <section class="card tab-panel tab-hidden" id="storageSection" role="tabpanel" aria-labelledby="tab-files">
+      <div class="browser-header">
+        <div><span class="eyebrow">STEP 3 · BROWSE OR DOWNLOAD</span><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-files"/></svg> Files on this laptop</h2></div>
+        <div class="browser-actions">
+          <button class="btn-sm outline" id="newFolderBtn"><svg class="icon" aria-hidden="true"><use href="#i-folder-plus"/></svg> New folder</button>
+          <a id="zipCurrentBtn" href="/api/zip?path=" class="btn-sm accent"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg> Download this folder</a>
+        </div>
+      </div>
+      <p class="section-description">Browse the host’s shared folder. Select items to download them as one ZIP, or save a single file. The page shows progress when it can safely stream to a save location; otherwise your browser’s Downloads panel shows live progress.</p>
+      <div class="breadcrumb" id="breadcrumbBar"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg> /</div>
+      <div class="select-toolbar">
+        <div class="select-toolbar-left">
+          <label class="checkbox-label"><input type="checkbox" id="selectAllCheckbox"><span>Select All</span></label>
+          <span id="selectionSummary" class="selection-summary">0 selected</span>
+        </div>
+        <div class="view-mode-toggle" role="group" aria-label="Folder display view mode">
+          <button id="viewGridBtn" type="button" class="btn-xs view-toggle-btn active" title="Grid / Tiles View" aria-pressed="true">
+            <svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg> Tiles
+          </button>
+          <button id="viewListBtn" type="button" class="btn-xs view-toggle-btn" title="List View" aria-pressed="false">
+            <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg> List
+          </button>
+        </div>
+      </div>
+      <ul id="downloadQueue" class="download-queue hidden" aria-label="Download progress"></ul>
+      <ul class="file-list grid-view" id="fileList"><li class="empty-state">Loading...</li></ul>
+    </section>

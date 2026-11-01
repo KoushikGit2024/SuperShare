@@ -1,0 +1,20 @@
+/* --- Storage & Cache Section Metrics (CRITICAL 5) --- */
+.storage-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 16px; }
+.storage-metrics > div { display: grid; gap: 4px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: #141416; }
+.storage-metrics strong { font-size: 1.25rem; color: #fef08a; }
+.storage-metrics span:last-child { color: var(--muted); font-size: 0.78rem; }
+
+.network-card { border-color: #4a3e1b; }
+.eyebrow { color: #c9a54a; }
+.route-arrow { color: #a8924f; }
+.drop-zone.drag-active { background: #241e0e; border-color: var(--primary); }
+.network-help-content pre code { color: #f3e7b5; }
+.section-nav a:hover { background: #241f12; }
+
+/* --- iOS and Coarse Pointer Enhancements (UI/UX 21e) --- */
+@media (pointer: coarse) {
+  summary { padding-block: 12px; }
+  .transfer-filter-label select, .action-dialog-input-wrap input { min-height: 44px; }
+}
+html:has(dialog[open]) { overflow: hidden; }
+.action-dialog-card, .modal-card { overscroll-behavior: contain; }

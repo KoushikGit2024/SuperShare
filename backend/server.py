@@ -6,6 +6,7 @@ import platform
 import socket
 import asyncio
 import json
+import re
 from aiohttp import web
 
 import time
@@ -62,7 +63,22 @@ if platform.system() == "Windows":
 
 
 async def index_handler(request: web.Request) -> web.Response:
-    return web.FileResponse(TEMPLATE_DIR / "index.html")
+    index_file = TEMPLATE_DIR / "index.html"
+    if not index_file.is_file():
+        raise web.HTTPNotFound(text="Template index.html not found")
+    
+    html = index_file.read_text(encoding="utf-8")
+    partials_dir = TEMPLATE_DIR / "partials"
+
+    def _replace_include(match):
+        rel_name = match.group(1).replace("partials/", "")
+        p_file = partials_dir / rel_name
+        if p_file.is_file():
+            return p_file.read_text(encoding="utf-8")
+        return f"<!-- Missing partial: {rel_name} -->"
+
+    composed_html = re.sub(r'<!--#include file="([^"]+)"-->', _replace_include, html)
+    return web.Response(text=composed_html, content_type="text/html", charset="utf-8")
 
 
 async def _discovery_broadcaster(app):
@@ -137,6 +153,9 @@ async def security_headers_middleware(request: web.Request, handler):
 async def api_error_middleware(request: web.Request, handler):
     try:
         return await handler(request)
+    except (ConnectionError, ConnectionResetError):
+        # Client aborted or disconnected from TCP socket during download or upload
+        return web.Response(status=499, text="Client Closed Connection")
     except PermissionError as exc:
         raise web.HTTPForbidden(text=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -152,8 +171,10 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.on_startup.append(_start_discovery)
     app.on_cleanup.append(_stop_discovery)
 
-    # Main UI Page
+    # Main UI Page & Clean Frontend Routes
     app.router.add_get("/", index_handler)
+    for route in ("/send", "/files", "/connect", "/devices", "/activity", "/storage"):
+        app.router.add_get(route, index_handler)
 
     # REST & Streaming API
     app.router.add_get("/api/status", status_handler)

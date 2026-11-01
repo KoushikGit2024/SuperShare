@@ -1,0 +1,598 @@
+// static/js/pages/explorer.js
+// Step 3: Browse shared files/folders, Tiles/List view switching, downloads with live size & progress,
+// inline preview trigger, batch ZIP download, deletion, and folder picker modal
+
+import { safeStorage, formatBytes, icon, showNotice, responseError, editText, confirmAction } from "../services/utils.js";
+import { deviceHeaders } from "../services/device.js";
+import { canPreviewFile, openFilePreview, getFileExtension, PREVIEW_TYPES } from "../services/preview.js";
+
+export let currentPath = "";
+export let currentItems = [];
+export let selectedItems = new Map();
+export let currentHostBrowsePath = "";
+
+let fileViewMode = safeStorage.getItem("supershare-file-view-mode") || "grid";
+
+export function setFileViewMode(mode) {
+  fileViewMode = mode;
+  safeStorage.setItem("supershare-file-view-mode", mode);
+  const list = document.getElementById("fileList");
+  const gridBtn = document.getElementById("viewGridBtn");
+  const listBtn = document.getElementById("viewListBtn");
+
+  if (list) list.classList.toggle("grid-view", mode === "grid");
+  if (gridBtn) {
+    gridBtn.classList.toggle("active", mode === "grid");
+    gridBtn.setAttribute("aria-pressed", mode === "grid" ? "true" : "false");
+  }
+  if (listBtn) {
+    listBtn.classList.toggle("active", mode === "list");
+    listBtn.setAttribute("aria-pressed", mode === "list" ? "true" : "false");
+  }
+  if (currentItems && currentItems.length) {
+    renderFileItems();
+  }
+}
+
+export function updateSelectionUI() {
+  const count = selectedItems.size;
+  const summary = document.getElementById("selectionSummary");
+  if (summary) summary.textContent = `${count} selected`;
+  const selectAll = document.getElementById("selectAllCheckbox");
+  if (selectAll) selectAll.checked = currentItems.length > 0 && count === currentItems.length;
+
+  const dlSelected = document.getElementById("downloadSelectedBtn");
+  if (dlSelected) dlSelected.disabled = count === 0;
+  const delSelected = document.getElementById("deleteSelectedBtn");
+  if (delSelected) delSelected.disabled = count === 0;
+}
+
+export async function fetchDirectory(path = "") {
+  currentPath = path;
+  selectedItems.clear();
+  const breadcrumb = document.getElementById("breadcrumbBar");
+  if (breadcrumb) {
+    breadcrumb.replaceChildren(icon("home"), document.createTextNode(` Subpath: /${path}`));
+  }
+  const zipBtn = document.getElementById("zipCurrentBtn");
+  if (zipBtn) {
+    zipBtn.href = "/api/zip?path=" + encodeURIComponent(path);
+    zipBtn.dataset.downloadName = `${path.split("/").filter(Boolean).at(-1) || "shared-folder"}.zip`;
+  }
+  const response = await fetch("/api/list?path=" + encodeURIComponent(path));
+  if (!response.ok) throw new Error(await responseError(response));
+  const data = await response.json();
+  window._sharedFilesLoaded = true;
+  currentItems = data.items || [];
+  if (data.share_root) {
+    currentHostBrowsePath = data.share_root;
+    const hostRootEl = document.getElementById("hostRootText");
+    if (hostRootEl) {
+      hostRootEl.textContent = data.share_root;
+      hostRootEl.title = data.share_root;
+    }
+    const destPathEl = document.getElementById("destinationPath");
+    if (destPathEl) {
+      destPathEl.textContent = `${data.share_root}${path ? `\\${path.replaceAll("/", "\\")}` : ""}`;
+    }
+  }
+  renderFileItems();
+  updateSelectionUI();
+}
+
+export function showDirectoryError(error) {
+  const list = document.getElementById("fileList");
+  if (!list) return;
+  list.replaceChildren();
+  const empty = document.createElement("li");
+  empty.className = "empty-state";
+  empty.textContent = `Could not load folder: ${error.message}`;
+  list.appendChild(empty);
+  showNotice(error.message, "error");
+}
+
+/* --- Live In-Page Download Progress Bar & Speed Tracker --- */
+const MAX_IN_PAGE_DOWNLOAD_BYTES = 48 * 1024 * 1024;
+
+export function addDownloadRow(filename) {
+  const queue = document.getElementById("downloadQueue");
+  if (!queue) return null;
+  queue.classList.remove("hidden");
+  while (queue.children.length >= 8) queue.firstElementChild.remove();
+  const row = document.createElement("li");
+  row.className = "download-row";
+  const info = document.createElement("div");
+  info.className = "download-row-info";
+  const title = document.createElement("strong");
+  title.textContent = filename;
+  const state = document.createElement("span");
+  state.className = "download-state";
+  state.textContent = "Connecting to host";
+  const progress = document.createElement("progress");
+  progress.max = 1;
+  progress.value = 0;
+  progress.setAttribute("aria-label", `Downloading ${filename}`);
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "btn-xs outline";
+  stop.textContent = "Cancel";
+  info.append(title, state);
+  row.append(info, stop, progress);
+  queue.prepend(row);
+  return { row, title, state, progress, stop };
+}
+
+function triggerBrowserDownload(url, filename) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+export async function startTrackedDownload(url, filename, expectedSize = 0) {
+  const item = addDownloadRow(filename);
+  if (!item) {
+    triggerBrowserDownload(url, filename);
+    return;
+  }
+  const controller = new AbortController();
+  item.stop.onclick = () => controller.abort();
+  let writer = null;
+  let reader = null;
+  let saveHandle = null;
+
+  try {
+    if (window.isSecureContext && "showSaveFilePicker" in window) {
+      try {
+        saveHandle = await window.showSaveFilePicker({ suggestedName: filename });
+      } catch (error) {
+        if (error.name === "AbortError") throw error;
+      }
+    }
+    if (!saveHandle && (!expectedSize || expectedSize > MAX_IN_PAGE_DOWNLOAD_BYTES)) {
+      item.stop.remove();
+      item.progress.removeAttribute("value");
+      item.state.textContent = `Downloading ${expectedSize ? formatBytes(expectedSize) : ""} · saving to Downloads folder`;
+      triggerBrowserDownload(url, filename);
+      return;
+    }
+    const response = await fetch(url, { credentials: "same-origin", headers: deviceHeaders(), signal: controller.signal });
+    if (!response.ok) throw new Error(await responseError(response));
+    const total = Number(response.headers.get("Content-Length")) || expectedSize || 0;
+    reader = response.body?.getReader();
+    if (!reader) throw new Error("This browser cannot stream the download. Try a current browser.");
+
+    if (!saveHandle && total > MAX_IN_PAGE_DOWNLOAD_BYTES) {
+      await reader.cancel();
+      item.stop.remove();
+      item.progress.removeAttribute("value");
+      item.state.textContent = `Large file (${formatBytes(total)}) passed to browser download manager.`;
+      triggerBrowserDownload(url, filename);
+      return;
+    }
+
+    if (saveHandle) writer = await saveHandle.createWritable();
+    const chunks = [];
+    let received = 0;
+    item.state.textContent = total ? `Starting · ${formatBytes(total)}` : "Receiving…";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (!saveHandle && received > MAX_IN_PAGE_DOWNLOAD_BYTES) {
+        await reader.cancel();
+        chunks.length = 0;
+        item.stop.remove();
+        item.progress.removeAttribute("value");
+        item.state.textContent = "Large file handed to browser download manager; follow progress there.";
+        triggerBrowserDownload(url, filename);
+        return;
+      }
+      if (writer) await writer.write(value);
+      else chunks.push(value);
+
+      if (total) {
+        item.progress.max = total;
+        item.progress.value = received;
+      } else {
+        item.progress.removeAttribute("value");
+      }
+      item.state.textContent = `${formatBytes(received)}${total ? ` of ${formatBytes(total)}` : " received"}`;
+    }
+
+    if (writer) {
+      await writer.close();
+    } else {
+      const blob = new Blob(chunks, { type: response.headers.get("Content-Type") || "application/octet-stream" });
+      const objectUrl = URL.createObjectURL(blob);
+      triggerBrowserDownload(objectUrl, filename);
+      chunks.length = 0;
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    }
+
+    item.progress.max = total || Math.max(received, 1);
+    item.progress.value = total || received || 1;
+    item.state.textContent = `Saved · ${formatBytes(received)}`;
+    item.stop.remove();
+    item.row.classList.add("download-complete");
+  } catch (error) {
+    try { await reader?.cancel(); } catch (_) {}
+    try { await writer?.abort(); } catch (_) {}
+    item.stop.remove();
+    if (error.name === "AbortError") {
+      item.state.textContent = "Download cancelled";
+      item.row.classList.add("download-cancelled");
+    } else {
+      item.state.textContent = `Download failed · ${error.message}`;
+      item.row.classList.add("download-failed");
+      showNotice(error.message, "error");
+    }
+  }
+}
+
+export function renderFileItems() {
+  const list = document.getElementById("fileList");
+  if (!list) return;
+  list.replaceChildren();
+  list.classList.toggle("grid-view", fileViewMode === "grid");
+
+  if (currentPath) {
+    const parent = currentPath.split("/").slice(0, -1).join("/");
+    const li = document.createElement("li");
+    li.className = "file-item parent-nav-item";
+
+    if (fileViewMode === "grid") {
+      const thumb = document.createElement("div");
+      thumb.className = "tile-thumb-container";
+      const ph = document.createElement("div");
+      ph.className = "tile-icon-placeholder folder-icon";
+      ph.appendChild(icon("folder-up"));
+      thumb.appendChild(ph);
+      thumb.onclick = () => fetchDirectory(parent).catch(showDirectoryError);
+
+      const info = document.createElement("div");
+      info.className = "tile-info";
+      const name = document.createElement("a");
+      name.href = "#";
+      name.className = "tile-name";
+      name.textContent = ".. (Back to parent)";
+      name.onclick = e => { e.preventDefault(); fetchDirectory(parent).catch(showDirectoryError); };
+      info.appendChild(name);
+      li.append(thumb, info);
+    } else {
+      const left = document.createElement("div");
+      left.className = "item-left";
+      const info = document.createElement("div");
+      info.className = "file-info";
+      const link = document.createElement("a");
+      link.href = "#";
+      link.className = "file-link";
+      link.append(icon("folder-up"), document.createTextNode(" .. (Back to parent)"));
+      link.onclick = event => { event.preventDefault(); fetchDirectory(parent).catch(showDirectoryError); };
+      info.appendChild(link);
+      left.appendChild(info);
+      li.appendChild(left);
+    }
+    list.appendChild(li);
+  }
+
+  if (!currentItems.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = "This folder is empty.";
+    list.appendChild(empty);
+    updateSelectionUI();
+    return;
+  }
+
+  currentItems.forEach(item => {
+    const relItemPath = currentPath ? `${currentPath}/${item.name}` : item.name;
+    const isSelected = selectedItems.has(relItemPath);
+    const ext = getFileExtension(item.name);
+    const previewable = canPreviewFile(item.name);
+
+    const li = document.createElement("li");
+    li.className = `file-item ${item.is_dir ? "is-folder" : "is-file"} ${isSelected ? "selected" : ""}`;
+
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "item-checkbox";
+    check.checked = isSelected;
+    check.onclick = e => {
+      e.stopPropagation();
+      if (check.checked) selectedItems.set(relItemPath, item);
+      else selectedItems.delete(relItemPath);
+      li.classList.toggle("selected", check.checked);
+      updateSelectionUI();
+    };
+
+    if (fileViewMode === "grid") {
+      // ===== TILES / GRID VIEW =====
+      const thumb = document.createElement("div");
+      thumb.className = "tile-thumb-container";
+
+      if (item.is_dir) {
+        const ph = document.createElement("div");
+        ph.className = "tile-icon-placeholder folder-icon";
+        ph.appendChild(icon("folder"));
+        thumb.appendChild(ph);
+        thumb.onclick = () => fetchDirectory(relItemPath).catch(showDirectoryError);
+      } else if (PREVIEW_TYPES.img.has(ext)) {
+        const img = document.createElement("img");
+        img.className = "tile-thumb-img";
+        img.src = `/api/preview?path=${encodeURIComponent(relItemPath)}`;
+        img.alt = item.name;
+        img.loading = "lazy";
+        thumb.appendChild(img);
+        thumb.onclick = () => openFilePreview(relItemPath, item.name, item.size || 0);
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "tile-icon-placeholder";
+        const iconType = PREVIEW_TYPES.audio.has(ext) ? "music" : PREVIEW_TYPES.video.has(ext) ? "monitor" : PREVIEW_TYPES.pdf.has(ext) ? "files" : "file";
+        ph.appendChild(icon(iconType));
+        thumb.appendChild(ph);
+        if (previewable) {
+          thumb.onclick = () => openFilePreview(relItemPath, item.name, item.size || 0);
+        } else {
+          thumb.onclick = () => startTrackedDownload(`/api/download?path=${encodeURIComponent(relItemPath)}`, item.name, item.size);
+        }
+      }
+
+      const badge = document.createElement("span");
+      badge.className = "tile-badge";
+      badge.textContent = item.is_dir ? "DIR" : (ext ? ext.toUpperCase() : "FILE");
+      thumb.appendChild(badge);
+
+      const info = document.createElement("div");
+      info.className = "tile-info";
+      const nameLink = document.createElement("a");
+      nameLink.href = "#";
+      nameLink.className = "tile-name";
+      nameLink.title = item.name;
+      nameLink.textContent = item.name;
+      if (item.is_dir) {
+        nameLink.onclick = e => { e.preventDefault(); fetchDirectory(relItemPath).catch(showDirectoryError); };
+      } else if (previewable) {
+        nameLink.onclick = e => { e.preventDefault(); openFilePreview(relItemPath, item.name, item.size || 0); };
+      } else {
+        nameLink.onclick = e => { e.preventDefault(); startTrackedDownload(`/api/download?path=${encodeURIComponent(relItemPath)}`, item.name, item.size); };
+      }
+      info.appendChild(nameLink);
+
+      const meta = document.createElement("div");
+      meta.className = "tile-meta";
+      meta.textContent = item.is_dir ? "Folder" : formatBytes(item.size);
+      info.appendChild(meta);
+
+      const actions = document.createElement("div");
+      actions.className = "tile-actions";
+
+      if (item.is_dir) {
+        const zipBtn = document.createElement("button");
+        zipBtn.type = "button";
+        zipBtn.className = "dl-btn folder";
+        zipBtn.append(icon("archive"), document.createTextNode(" ZIP"));
+        zipBtn.onclick = () => startTrackedDownload(`/api/zip?path=${encodeURIComponent(relItemPath)}`, `${item.name}.zip`, 0);
+        actions.appendChild(zipBtn);
+      } else {
+        if (previewable) {
+          const prevBtn = document.createElement("button");
+          prevBtn.type = "button";
+          prevBtn.className = "btn-preview";
+          prevBtn.append(icon("monitor"), document.createTextNode(" View"));
+          prevBtn.onclick = e => {
+            e.stopPropagation();
+            openFilePreview(relItemPath, item.name, item.size || 0);
+          };
+          actions.appendChild(prevBtn);
+        }
+        const saveBtn = document.createElement("button");
+        saveBtn.type = "button";
+        saveBtn.className = "dl-btn";
+        saveBtn.append(icon("download"), document.createTextNode(" Save"));
+        saveBtn.onclick = () => startTrackedDownload(`/api/download?path=${encodeURIComponent(relItemPath)}`, item.name, item.size);
+        actions.appendChild(saveBtn);
+      }
+
+      li.append(check, thumb, info, actions);
+    } else {
+      // ===== TRADITIONAL LIST VIEW =====
+      const left = document.createElement("div");
+      left.className = "item-left";
+      left.appendChild(check);
+
+      const info = document.createElement("div");
+      info.className = "file-info";
+      const link = document.createElement("a");
+      link.className = "file-link";
+
+      if (item.is_dir) {
+        link.href = "#";
+        link.append(icon("folder"), document.createTextNode(` ${item.name}`));
+        link.onclick = event => { event.preventDefault(); fetchDirectory(relItemPath).catch(showDirectoryError); };
+        const meta = document.createElement("div");
+        meta.className = "file-meta";
+        meta.textContent = `Folder · ${item.mtime ? new Date(item.mtime * 1000).toLocaleDateString() : ""}`;
+        info.append(link, meta);
+        left.appendChild(info);
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "dl-btn folder";
+        button.append(icon("archive"), document.createTextNode(" ZIP"));
+        button.onclick = () => startTrackedDownload(`/api/zip?path=${encodeURIComponent(relItemPath)}`, `${item.name}.zip`, 0);
+        li.append(left, button);
+      } else {
+        link.href = "#";
+        link.append(icon("file"), document.createTextNode(` ${item.name}`));
+        if (previewable) {
+          link.onclick = event => { event.preventDefault(); openFilePreview(relItemPath, item.name, item.size || 0); };
+        } else {
+          link.onclick = event => { event.preventDefault(); startTrackedDownload(`/api/download?path=${encodeURIComponent(relItemPath)}`, item.name, item.size); };
+        }
+        const meta = document.createElement("div");
+        meta.className = "file-meta";
+        meta.textContent = `${formatBytes(item.size)} · ${item.mtime ? new Date(item.mtime * 1000).toLocaleDateString() : ""}`;
+        info.append(link, meta);
+        left.appendChild(info);
+
+        const actionGroup = document.createElement("div");
+        actionGroup.className = "action-group";
+        actionGroup.style.display = "flex";
+        actionGroup.style.gap = "6px";
+
+        if (previewable) {
+          const prevBtn = document.createElement("button");
+          prevBtn.type = "button";
+          prevBtn.className = "btn-preview";
+          prevBtn.append(icon("monitor"), document.createTextNode(" Preview"));
+          prevBtn.onclick = () => openFilePreview(relItemPath, item.name, item.size || 0);
+          actionGroup.appendChild(prevBtn);
+        }
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "dl-btn";
+        button.append(icon("download"), document.createTextNode(" Save"));
+        button.onclick = () => startTrackedDownload(`/api/download?path=${encodeURIComponent(relItemPath)}`, item.name, item.size);
+        actionGroup.appendChild(button);
+
+        li.append(left, actionGroup);
+      }
+    }
+
+    list.appendChild(li);
+  });
+}
+
+export async function loadHostModalFolders(dirPath) {
+  const response = await fetch("/api/host-folders?dir=" + encodeURIComponent(dirPath || ""));
+  if (!response.ok) throw new Error(await responseError(response));
+  const data = await response.json();
+  currentHostBrowsePath = data.current;
+  const modalPath = document.getElementById("modalCurrentPath");
+  if (modalPath) modalPath.replaceChildren(icon("folder-open"), document.createTextNode(` ${data.current}`));
+  const drives = document.getElementById("drivesBar");
+  if (drives) {
+    drives.replaceChildren();
+    (data.drives || []).forEach(drive => {
+      const button = document.createElement("button");
+      button.className = "btn-xs outline";
+      button.append(icon("monitor"), document.createTextNode(` ${drive.name}`));
+      button.onclick = () => loadHostModalFolders(drive.path);
+      drives.appendChild(button);
+    });
+  }
+  const list = document.getElementById("modalFolderList");
+  if (list) {
+    list.replaceChildren();
+    if (data.parent) {
+      const up = document.createElement("li");
+      up.append(icon("arrow-up"), document.createTextNode(" .. (Up one level)"));
+      up.onclick = () => loadHostModalFolders(data.parent);
+      list.appendChild(up);
+    }
+    (data.folders || []).forEach(folder => {
+      const item = document.createElement("li");
+      item.append(icon("folder"), document.createTextNode(` ${folder.name}`));
+      item.onclick = () => loadHostModalFolders(folder.path);
+      list.appendChild(item);
+    });
+  }
+}
+
+export function initExplorerPage() {
+  document.getElementById("viewGridBtn")?.addEventListener("click", () => setFileViewMode("grid"));
+  document.getElementById("viewListBtn")?.addEventListener("click", () => setFileViewMode("list"));
+
+  document.getElementById("zipCurrentBtn")?.addEventListener("click", event => {
+    event.preventDefault();
+    const btn = document.getElementById("zipCurrentBtn");
+    startTrackedDownload(btn.href, btn.dataset.downloadName || "shared-folder.zip", 0);
+  });
+
+  document.getElementById("selectAllCheckbox")?.addEventListener("change", event => {
+    const checked = event.target.checked;
+    currentItems.forEach(item => {
+      const path = currentPath ? `${currentPath}/${item.name}` : item.name;
+      if (checked) selectedItems.set(path, item);
+      else selectedItems.delete(path);
+    });
+    document.querySelectorAll(".file-item").forEach(item => item.classList.toggle("selected", checked));
+    document.querySelectorAll(".item-checkbox").forEach(box => { box.checked = checked; });
+    updateSelectionUI();
+  });
+
+  document.getElementById("downloadSelectedBtn")?.addEventListener("click", () => {
+    if (selectedItems.size) {
+      const keys = [...selectedItems.keys()];
+      const url = `/api/zip-selected?items=${encodeURIComponent(JSON.stringify(keys))}`;
+      startTrackedDownload(url, `supershare_selected_${selectedItems.size}.zip`, 0);
+    }
+  });
+
+  document.getElementById("deleteSelectedBtn")?.addEventListener("click", async () => {
+    if (!await confirmAction("Delete selected items?", `This permanently removes ${selectedItems.size} item(s) from the host folder.`, true)) return;
+    const response = await fetch("/api/delete-selected", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...deviceHeaders() },
+      body: JSON.stringify({ items: [...selectedItems.keys()] })
+    });
+    if (response.ok) fetchDirectory(currentPath);
+    else showNotice(await responseError(response), "error");
+  });
+
+  document.getElementById("newFolderBtn")?.addEventListener("click", async () => {
+    const name = await editText("Create a folder", "The folder will be created inside the current shared location.", "Folder name");
+    if (!name) return;
+    const path = currentPath ? `${currentPath}/${name}` : name;
+    const response = await fetch("/api/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...deviceHeaders() },
+      body: JSON.stringify({ path })
+    });
+    if (response.ok) fetchDirectory(currentPath);
+    else showNotice(await responseError(response), "error");
+  });
+
+  document.getElementById("openDriveBrowserBtn")?.addEventListener("click", () => {
+    document.getElementById("hostModal")?.classList.remove("hidden");
+    loadHostModalFolders(currentHostBrowsePath).catch(error => showNotice(error.message, "error"));
+  });
+
+  document.getElementById("closeModalBtn")?.addEventListener("click", () => {
+    document.getElementById("hostModal")?.classList.add("hidden");
+  });
+
+  document.getElementById("selectThisHostFolderBtn")?.addEventListener("click", async () => {
+    const response = await fetch("/api/set-share-dir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...deviceHeaders() },
+      body: JSON.stringify({ share_dir: currentHostBrowsePath })
+    });
+    if (response.ok) {
+      document.getElementById("hostModal")?.classList.add("hidden");
+      fetchDirectory("");
+    } else {
+      showNotice(await responseError(response), "error");
+    }
+  });
+
+  document.getElementById("nativePickerBtn")?.addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/pick-host-gui", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...deviceHeaders() },
+        body: "{}"
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      await fetchDirectory("");
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
+  });
+}

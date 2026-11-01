@@ -1,0 +1,20 @@
+<!-- Storage & Cache Management Card -->
+    <section class="card tab-panel tab-hidden" id="storageMgrSection" role="tabpanel" aria-labelledby="tab-storage-mgr">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">HOST MAINTENANCE</span>
+          <h2>Storage &amp; cache</h2>
+          <p>Disk use on the receive drive and cleanup of unfinished uploads. Shared files are not deleted by these actions.</p>
+        </div>
+      </div>
+      <div class="storage-metrics">
+        <div><span class="eyebrow">FREE</span><strong id="metricFreeDisk">–</strong><span id="metricTotalDisk"></span></div>
+        <div><span class="eyebrow">SHARED FILES</span><strong id="metricSharedSize">–</strong><span id="metricSharedCount"></span></div>
+        <div><span class="eyebrow">UNFINISHED UPLOADS</span><strong id="metricPartialSize">–</strong><span id="metricPartialCount"></span></div>
+      </div>
+      <div class="browser-actions">
+        <button id="cleanPartialsBtn" class="btn-sm outline" type="button">Remove unfinished uploads</button>
+        <button id="clearHistoryBtn" class="btn-sm outline" type="button">Clear activity log</button>
+        <button id="resetStateBtn" class="btn-sm danger" type="button">Forget all browsers</button>
+      </div>
+    </section>

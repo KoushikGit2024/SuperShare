@@ -1,0 +1,22 @@
+<!-- Upload Card -->
+    <section class="card tab-panel" id="sendSection" role="tabpanel" aria-labelledby="tab-send">
+      <span class="eyebrow">STEP 2 · CHOOSE WHAT TO SEND</span><h2><svg class="icon heading-icon" aria-hidden="true"><use href="#i-send"/></svg> Send files to this laptop</h2>
+      <p class="section-description">Selected files stream from their current location to the laptop’s receive folder. The originals are not moved or copied first. You can choose files, choose a folder, or drop files below.</p>
+      <div class="route-summary" id="routeSummary"><span class="route-item"><strong>From</strong><span id="sourceDeviceName">This browser profile</span><code id="sourceProfileId"></code></span><button id="nameBrowserBtn" class="btn-xs outline" type="button">Name this profile</button><span class="route-arrow" aria-hidden="true">→</span><span class="route-item"><strong>To</strong><span id="destinationName">This host</span><code id="destinationPath">Loading destination...</code></span><span class="connection-state" id="connectionState">Checking connection</span><button id="pairDeviceBtn" class="btn-xs accent hidden" type="button">Pair with host</button></div>
+      <div id="pairPhrasePanel" class="pair-phrase hidden"><div><strong>Verify this phrase on the laptop</strong><code id="pairPhrase"></code><span>Compare all three words with the laptop dashboard, then confirm on both devices.</span></div><button id="confirmPairingBtn" class="btn-xs accent" type="button">Phrase matches</button></div>
+      <div class="btn-grid">
+        <label class="btn primary"><svg class="icon" aria-hidden="true"><use href="#i-file-plus"/></svg> Choose files<input type="file" id="fileInput" multiple hidden></label>
+        <label class="btn secondary"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg> Choose a folder<input type="file" id="folderInput" webkitdirectory directory multiple hidden></label>
+      </div>
+      <div id="dropZone" class="drop-zone" tabindex="0"><svg class="icon" aria-hidden="true"><use href="#i-file-plus"/></svg><strong>Drop files here</strong><span>or paste copied files. They will be sent to the folder shown above.</span></div>
+      <div id="progressContainer" class="progress-box hidden" role="group" aria-label="Current transfer progress">
+        <div class="progress-title">
+          <span class="running-indicator"></span>
+          <span id="uploadFileName">Uploading...</span>
+          <button id="cancelUploadBtn" type="button" class="btn-xs outline hidden" style="margin-left:auto;">Cancel</button>
+        </div>
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="uploadBarFill"></div></div>
+        <div class="progress-stats"><span id="uploadPercent">0%</span><span id="uploadSpeed">0 MB/s</span></div>
+      </div>
+      <ul id="uploadQueue" class="upload-queue hidden" aria-label="Files in this send batch"></ul>
+    </section>

@@ -1,0 +1,58 @@
+    <header class="header">
+      <div class="brand-row">
+        <div class="brand-copy">
+          <h1>
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="brand-svg">
+                <path d="M4 12v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/>
+                <polyline points="16 6 12 2 8 6"/>
+                <line x1="12" y1="2" x2="12" y2="15"/>
+                <circle cx="12" cy="15" r="1.5" fill="currentColor"/>
+                <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></symbol>
+                <symbol id="i-list" viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></symbol>
+              </svg>
+            </span>
+            SuperShare
+          </h1>
+          <p>Move files between browsers on your local network.</p>
+        </div>
+        <button id="quickQrBtn" class="btn-xs accent" type="button" style="margin-top:8px"><svg class="icon" aria-hidden="true"><use href="#i-route"/></svg> Scan QR to Connect</button>
+      </div>
+      <div class="host-root-bar">
+        <div class="host-root-copy"><span class="eyebrow">RECEIVE FOLDER ON THIS LAPTOP</span><code id="hostRootText" class="host-root-text">Loading shared folder…</code></div>
+        <div class="host-root-actions">
+          <button class="btn-xs accent" id="openDriveBrowserBtn"><svg class="icon" aria-hidden="true"><use href="#i-folder-open"/></svg> Change receive folder</button>
+          <button class="btn-xs outline" id="nativePickerBtn"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg> Choose folder on PC</button>
+        </div>
+      </div>
+      <nav class="tab-nav" role="tablist" aria-label="SuperShare sections">
+        <button type="button" role="tab" class="tab-btn active" id="tab-send" aria-selected="true" aria-controls="sendSection" data-tab="sendSection">
+          <svg class="icon" aria-hidden="true"><use href="#i-send"/></svg>
+          <span>Send</span>
+          <span id="tabSendDot" class="tab-alert-dot hidden" aria-hidden="true"></span>
+        </button>
+        <button type="button" role="tab" class="tab-btn" id="tab-files" aria-selected="false" aria-controls="storageSection" data-tab="storageSection" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="#i-files"/></svg>
+          <span>Files</span>
+        </button>
+        <button type="button" role="tab" class="tab-btn" id="tab-connect" aria-selected="false" aria-controls="networkSection" data-tab="networkSection" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="#i-route"/></svg>
+          <span>Connect</span>
+        </button>
+        <button type="button" role="tab" class="tab-btn" id="tab-devices" aria-selected="false" aria-controls="devicesSection" data-tab="devicesSection" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="#i-devices"/></svg>
+          <span>Devices</span>
+          <span id="tabDeviceBadge" class="tab-badge">0</span>
+          <span id="tabDeviceDot" class="tab-alert-dot hidden" aria-hidden="true"></span>
+        </button>
+        <button type="button" role="tab" class="tab-btn" id="tab-activity" aria-selected="false" aria-controls="transfersSection" data-tab="transfersSection" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="#i-transfer"/></svg>
+          <span>Activity</span>
+          <span id="tabTransferBadge" class="tab-badge">0</span>
+        </button>
+        <button type="button" role="tab" class="tab-btn" id="tab-storage-mgr" aria-selected="false" aria-controls="storageMgrSection" data-tab="storageMgrSection" tabindex="-1">
+          <svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>
+          <span>Storage & Cache</span>
+        </button>
+      </nav>
+    </header>

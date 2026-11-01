@@ -1,0 +1,72 @@
+/* --- Clean Tab Navigation & Responsive Layout --- */
+.tab-hidden {
+  display: none !important;
+}
+
+.tab-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tab-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #141416;
+  color: #a1a1aa;
+  font-size: 0.82rem;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+  transition: all 0.12s ease;
+}
+
+.tab-btn:hover {
+  background: #1c1c1f;
+  color: #f4f4f5;
+  border-color: #3f3f46;
+}
+
+.tab-btn.active {
+  background: #252011;
+  color: #fef08a;
+  border-color: #eab308;
+  font-weight: 650;
+}
+
+.tab-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  background: #27272a;
+  color: #a1a1aa;
+}
+
+.tab-btn.active .tab-badge {
+  background: #eab308;
+  color: #101113;
+  font-weight: 700;
+}
+
+.tab-alert-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #eab308;
+}

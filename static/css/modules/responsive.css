@@ -1,0 +1,62 @@
+/* Full Responsive Clean Aesthetics for Mobile */
+@media (max-width: 640px) {
+  body {
+    padding: 12px 10px 100px;
+  }
+  .container {
+    max-width: 100%;
+  }
+  .header h1 {
+    font-size: 1.4rem;
+  }
+  .host-root-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .host-root-text {
+    max-width: 100%;
+  }
+  .host-root-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .host-root-actions button {
+    flex: 1 1 calc(50% - 6px);
+  }
+  .tab-nav {
+    margin-top: 12px;
+    padding-bottom: 4px;
+  }
+  .tab-btn {
+    padding: 8px 12px;
+    font-size: 0.78rem;
+  }
+  .route-summary {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .route-arrow {
+    display: none;
+  }
+  .pair-qr-content {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+  .pair-qr-frame {
+    max-width: 220px;
+  }
+}
+
+/* --- Mobile Ergonomics & WCAG AA Usability --- */
+@media (pointer: coarse) {
+  .btn-xs, .btn-sm, .dl-btn, .tab-btn, .modal-folder-list li, .action-dialog-actions button { min-height: 44px; }
+  input[type="checkbox"] { width: 28px; height: 28px; }
+  .item-left, .checkbox-label { gap: 14px; }
+}
+
+input, select, textarea { font-size: 16px; }
+body:has(dialog[open]), body:has(#hostModal:not(.hidden)) { overflow: hidden; }
+.action-dialog-card { max-height: calc(100dvh - 24px); overflow: auto; }
+.modal-card { max-height: calc(100dvh - 32px); }
