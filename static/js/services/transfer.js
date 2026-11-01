@@ -4,27 +4,27 @@
 import { safeStorage, sha256Buf, responseError } from "./utils.js";
 import { localDeviceId, deviceHeaders } from "./device.js";
 
-export let activeUpload = { id: null, resumeKey: null };
+const activeUploads = new Map();
 
 export function setActiveUpload(id, resumeKey) {
-  activeUpload = { id, resumeKey };
+  activeUploads.set(id, resumeKey);
 }
 
-export function clearActiveUpload() {
-  activeUpload = { id: null, resumeKey: null };
+export function clearActiveUpload(id) {
+  if (id) activeUploads.delete(id);
 }
 
 export function cancelActiveSession() {
-  const { id, resumeKey } = activeUpload;
-  if (!id) return;
-  safeStorage.removeItem(resumeKey);
-  fetch(`/api/transfers/${id}/cancel`, {
-    method: "POST",
-    credentials: "same-origin",
-    keepalive: true,
-    headers: deviceHeaders()
-  }).catch(() => {});
-  activeUpload = { id: null, resumeKey: null };
+  for (const [id, resumeKey] of activeUploads) {
+    safeStorage.removeItem(resumeKey);
+    fetch(`/api/transfers/${id}/cancel`, {
+      method: "POST",
+      credentials: "same-origin",
+      keepalive: true,
+      headers: deviceHeaders()
+    }).catch(() => {});
+  }
+  activeUploads.clear();
 }
 
 export const relPath = file => file._relativePath || file.webkitRelativePath || file.name;
@@ -154,22 +154,35 @@ export function putChunk(url, body, headers, signal, onProgress) {
   });
 }
 
+export const xferStats = (window.xferStats = { readMs: 0, hashMs: 0, putMs: 0, chunks: 0, bytes: 0 });
+
 export async function sendChunks({ session, file, offsets, chunkSize, signal, onBytes, onStatus = () => {} }) {
   const inner = new AbortController();
   signal.addEventListener("abort", () => inner.abort(), { once: true });
   let cursor = 0;
+  const skipClientHash = !globalThis.crypto?.subtle && safeStorage.getItem("supershare-fast-insecure") === "1";
   const worker = async () => {
     try {
       while (cursor < offsets.length) {
         inner.signal.throwIfAborted();
         const off = offsets[cursor++];
+        let t = performance.now();
         const buf = await file.slice(off, Math.min(off + chunkSize, file.size)).arrayBuffer();
-        const hash = await sha256Buf(buf);
+        xferStats.readMs += performance.now() - t;
+        const hashHeaders = {};
+        if (skipClientHash) {
+          hashHeaders["X-Chunk-Hash-Mode"] = "server";
+        } else {
+          t = performance.now();
+          hashHeaders["X-Chunk-SHA256"] = await sha256Buf(buf);
+          xferStats.hashMs += performance.now() - t;
+        }
         let sent = 0;
+        t = performance.now();
         for (let failures = 0; ; ) {
           try {
             await putChunk(`/api/transfers/${session.id}/chunk`, buf,
-              { ...deviceHeaders(), "X-Chunk-Offset": String(off), "X-Chunk-SHA256": hash },
+              { ...deviceHeaders(), "X-Chunk-Offset": String(off), ...hashHeaders },
               inner.signal, loaded => { onBytes(loaded - sent); sent = loaded; });
             onBytes(buf.byteLength - sent);
             break;
@@ -190,6 +203,9 @@ export async function sendChunks({ session, file, offsets, chunkSize, signal, on
             }
           }
         }
+        xferStats.putMs += performance.now() - t;
+        xferStats.chunks++;
+        xferStats.bytes += buf.byteLength;
       }
     } catch (e) {
       inner.abort();

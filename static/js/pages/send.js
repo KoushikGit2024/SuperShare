@@ -29,6 +29,13 @@ const pendingBatches = [];
 let currentAbort = null;
 let queueCtl = null;
 let hideTimer = 0;
+const UPLOAD_CONCURRENCY = 3;
+let dialogChain = Promise.resolve();
+const serialDialog = run => {
+  const result = dialogChain.then(run, run);
+  dialogChain = result.catch(() => {});
+  return result;
+};
 
 const uploadQueue = () => (queueCtl ||= createQueueController(document.getElementById("uploadQueue")));
 
@@ -85,7 +92,7 @@ async function drain() {
 async function uploadOne(entry, destination, signal, ui) {
   const { file, relative } = entry;
   const tracker = trackTransfer({ kind: "upload", label: relative });
-  let outcome = "failed";
+  let outcome = "failed", sessionId = null;
   try {
     const headers = { "Content-Type": "application/json", ...deviceHeaders() };
     const stamp = `${localDeviceId}:${destination}:${file.name}:${file.size}:${file.lastModified}`;
@@ -98,7 +105,7 @@ async function uploadOne(entry, destination, signal, ui) {
     }, headers, signal, ui.speed);
 
     if (created.status === 409) {
-      collision = await actionDialog({
+      collision = await serialDialog(() => actionDialog({
         title: "Destination file already exists",
         message: `${destination}\n\nChoose how to handle the existing file. Replacing publishes the incoming file only after its chunks verify.`,
         actions: [
@@ -107,7 +114,7 @@ async function uploadOne(entry, destination, signal, ui) {
           { label: "Keep both", value: "rename" },
           { label: "Replace after verify", value: "replace", primary: true }
         ]
-      }) || "cancel";
+      })) || "cancel";
       if (collision === "cancel") {
         setRow(entry, "Cancelled", "cancelled");
         outcome = "cancelled";
@@ -136,7 +143,7 @@ async function uploadOne(entry, destination, signal, ui) {
 
     safeStorage.setItem(resumeKey, session.id);
     safeStorage.setItem(`supershare-transfer-time:${stamp}`, String(Date.now()));
-    setActiveUpload(session.id, resumeKey);
+    sessionId = session.id; setActiveUpload(session.id, resumeKey);
 
     const chunkSize = session.chunk_size || (4 * 1024 * 1024);
     let uploadedBytes = session.offset || 0;
@@ -198,7 +205,7 @@ async function uploadOne(entry, destination, signal, ui) {
     outcome = error.name === "AbortError" ? "cancelled" : "failed";
     throw error;
   } finally {
-    clearActiveUpload();
+    clearActiveUpload(sessionId);
     tracker.finish(outcome);
   }
 }
@@ -211,11 +218,7 @@ async function uploadBatch({ entries }) {
   const speed = document.getElementById("uploadSpeed");
   const cancelBtn = document.getElementById("cancelUploadBtn");
   const indicator = document.querySelector(".running-indicator");
-  const ui = {
-    name: text => { if (name) name.textContent = text; },
-    speed: text => { if (speed) speed.textContent = text; },
-    progress: pct => { if (bar) bar.style.width = `${pct}%`; if (percent) percent.textContent = `${pct}%`; }
-  };
+  const setText = (el, text) => { if (el) el.textContent = text; };
 
   clearTimeout(hideTimer);
   box?.classList.remove("hidden");
@@ -227,22 +230,39 @@ async function uploadBatch({ entries }) {
   let wakeLock = null;
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch (_) {}
 
-  let skipped = 0, cancelled = 0;
+  let skipped = 0, cancelled = 0, finished = 0;
   const failed = [];
-  setConnectionState(`Sending ${entries.length} file${entries.length === 1 ? "" : "s"}`, "online");
+  const totalBytes = entries.reduce((sum, entry) => sum + (entry.file.size || 0), 0) || 1;
+  const startedAt = Date.now();
+  const concurrency = entries.length > 1 && entries.some(entry => entry.file.size < 16 * 1024 * 1024)
+    ? UPLOAD_CONCURRENCY : 1;
 
-  try {
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+  const paint = () => {
+    const done = entries.reduce((sum, entry) => sum + (Number(entry.progress.value) || 0), 0);
+    const pct = Math.min(100, Math.round(done / totalBytes * 100));
+    const avg = done / Math.max(1, (Date.now() - startedAt) / 1000);
+    if (bar) bar.style.width = `${pct}%`;
+    setText(percent, `${pct}%`);
+    setText(speed, `${formatBytes(done)} / ${formatBytes(totalBytes)} · ${formatBytes(avg)}/s average`);
+    setText(name, `Uploading: ${finished} of ${entries.length} files finished`);
+  };
+
+  setConnectionState(`Sending ${entries.length} file${entries.length === 1 ? "" : "s"}`, "online");
+  const ticker = setInterval(paint, 500);
+  paint();
+
+  let next = 0;
+  const worker = async () => {
+    while (next < entries.length) {
+      const entry = entries[next++];
       if (signal.aborted) {
         setRow(entry, "Not started · cancelled", "cancelled");
         cancelled++;
+        finished++;
         continue;
       }
       const destination = entry.base ? `${entry.base}/${entry.relative}` : entry.relative;
-      ui.name(`Uploading ${i + 1} of ${entries.length}: ${entry.relative}`);
-      ui.progress(0);
-      ui.speed("Starting");
+      const ui = { name: () => {}, progress: () => {}, speed: text => { entry.state.textContent = text; } };
       setRow(entry, "Preparing", "running");
       try {
         const result = await uploadOne(entry, destination, signal, ui);
@@ -258,11 +278,16 @@ async function uploadBatch({ entries }) {
           uploadQueue().setRetry(entry.row, () => enqueueUpload([entry.file], entry.base));
         }
       }
+      finished++;
     }
+  };
 
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, entries.length) }, worker));
     const ok = entries.length - skipped - cancelled - failed.length;
-    ui.name(signal.aborted ? "Transfer cancelled" : `Completed ${ok}; skipped ${skipped}; failed ${failed.length}`);
-    if (!signal.aborted) ui.progress(100);
+    paint();
+    setText(name, signal.aborted ? "Transfer cancelled" : `Completed ${ok}; skipped ${skipped}; failed ${failed.length}`);
+    if (!signal.aborted && bar) { bar.style.width = "100%"; setText(percent, "100%"); }
     indicator?.classList.add(failed.length || signal.aborted ? "failed" : "complete");
     setConnectionState(signal.aborted ? "Transfer cancelled" : "Batch transfer finished", "online");
     showNotice(`Sent ${ok}; skipped ${skipped}; cancelled ${cancelled}; failed ${failed.length}.`,
@@ -270,6 +295,7 @@ async function uploadBatch({ entries }) {
     fetchDirectory(currentPath).catch(() => {});
     refreshDevices();
   } finally {
+    clearInterval(ticker);
     try { await wakeLock?.release(); } catch (_) {}
     cancelBtn?.classList.add("hidden");
     currentAbort = null;

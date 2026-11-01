@@ -62,6 +62,10 @@ def start_reloader_watcher():
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+if sys.platform == "win32" and os.environ.get("SUPERSHARE_SELECTOR_LOOP") == "1":
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from aiohttp import web
 from backend.server import create_app
 from backend.config import HOST, PORT, STATE, PAIRING_CODE, save_persistent_state
@@ -73,51 +77,29 @@ def get_local_ips():
 
 
 def is_port_in_use(port):
-    with socket.socket(
-        socket.AF_INET,
-        socket.SOCK_STREAM
-    ) as s:
-        return s.connect_ex(
-            ("127.0.0.1", port)
-        ) == 0
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
 
 
 def get_port_process(port):
     try:
-        result = subprocess.run(
-            ["netstat", "-ano"],
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-
+        result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         for line in result.stdout.splitlines():
-            if (
-                f":{port}" in line
-                and "LISTENING" in line
-            ):
+            if f":{port}" in line and "LISTENING" in line:
                 parts = line.split()
-
                 if parts:
                     return parts[-1]
-
     except Exception:
         pass
-
     return None
 
 
 def copy_to_clipboard(text):
     try:
-        subprocess.run(
-            ["clip"],
-            input=text,
-            text=True,
-            check=True,
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
-
+        subprocess.run(["clip"], input=text, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return True
+    except Exception:
+        return False
 
     except Exception:
         return False
@@ -161,7 +143,12 @@ def configure_hotspot_firewall_rule(port: int) -> int:
         "| ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private }; "
         f"Get-NetFirewallRule -DisplayName '{rule_name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
         f"New-NetFirewallRule -DisplayName '{rule_name}' -Direction Inbound -Action Allow -Protocol TCP "
-        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Private | Out-Null"
+        f"-LocalPort {port} -RemoteAddress LocalSubnet -Profile Private | Out-Null; "
+        "Get-NetFirewallRule -DisplayName 'SuperShare port 80 proxy (Private profile)' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; "
+        "New-NetFirewallRule -DisplayName 'SuperShare port 80 proxy (Private profile)' -Direction Inbound -Action Allow -Protocol TCP "
+        "-LocalPort 80 -RemoteAddress LocalSubnet -Profile Private | Out-Null; "
+        "netsh interface portproxy delete v4tov4 listenport=80 listenaddress=0.0.0.0 2>$null; "
+        f"netsh interface portproxy add v4tov4 listenport=80 listenaddress=0.0.0.0 connectport={port} connectaddress=127.0.0.1 | Out-Null"
     )
     try:
         result = subprocess.run(
@@ -184,8 +171,23 @@ def configure_hotspot_firewall_rule(port: int) -> int:
 
     print("[OK] Active network and Windows hotspot profiles are Private.")
     print(f"[OK] Windows Firewall allows local-subnet TCP {port} on the Private profile.")
+    print(f"[OK] Portproxy forwarded port 80 -> {port} for port-free URLs.")
     print("[INFO] No router port forwarding was added.")
     return 0
+
+
+def is_port_80_proxy_active(target_port: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        res = subprocess.run(["netsh", "interface", "portproxy", "show", "v4tov4"], capture_output=True, text=True, check=False)
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and "80" in parts and str(target_port) in parts:
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def local_subnet_firewall_rule_exists(port: int) -> bool:
@@ -206,7 +208,9 @@ def local_subnet_firewall_rule_exists(port: int) -> bool:
             creationflags=subprocess.CREATE_NO_WINDOW,
             check=False,
         )
-        return result.returncode == 0
+        has_firewall = (result.returncode == 0)
+        has_proxy = is_port_80_proxy_active(port) if port != 80 else True
+        return has_firewall and has_proxy
     except OSError:
         return False
 
@@ -387,14 +391,15 @@ def main():
 
     local_interfaces = _host_interfaces()
     local_ips = [item["address"] for item in local_interfaces]
+    proxy_active = is_port_80_proxy_active(active_port) if active_port != 80 else True
 
     print(f"[SERVER] Shared Folder : {STATE['share_dir']}")
     print(f"[SERVER] Host          : {HOST}")
-    print(f"[SERVER] Port          : {active_port}")
+    print(f"[SERVER] Port          : {active_port}" + (" (port 80 proxy active)" if proxy_active and active_port != 80 else ""))
     print()
 
     print("[PC] Dashboard:")
-    print(f"     {scheme}://localhost:{active_port}/")
+    print(f"     {scheme}://localhost/")
 
     print()
 
@@ -405,11 +410,11 @@ def main():
 
         interface_names = {item["address"]: item["name"] for item in local_interfaces}
         for ip in local_ips:
-            url = f"{scheme}://{ip}/" if active_port == 80 else f"{scheme}://{ip}:{active_port}/"
+            url = f"{scheme}://{ip}/" if (active_port == 80 or proxy_active) else f"{scheme}://{ip}:{active_port}/"
             print(f"     {interface_names.get(ip, 'Network adapter')}: {url}")
 
         primary_ip = local_ips[0]
-        phone_url = f"{scheme}://{primary_ip}/" if active_port == 80 else f"{scheme}://{primary_ip}:{active_port}/"
+        phone_url = f"{scheme}://{primary_ip}/" if (active_port == 80 or proxy_active) else f"{scheme}://{primary_ip}:{active_port}/"
 
         print()
 
@@ -435,8 +440,8 @@ def main():
     print()
 
     try:
-        url = f"{scheme}://localhost/" if active_port == 80 else f"{scheme}://localhost:{active_port}/"
-        threading.Timer(1.2, webbrowser.open, [url]).start()
+        open_url = f"{scheme}://localhost/" if (active_port == 80 or proxy_active) else f"{scheme}://localhost:{active_port}/"
+        threading.Timer(1.2, webbrowser.open, [open_url]).start()
 
         if args.reload:
             start_reloader_watcher()

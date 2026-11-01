@@ -7,6 +7,7 @@ import socket
 import asyncio
 import json
 import re
+import os
 import aiohttp
 from aiohttp import web
 
@@ -50,6 +51,8 @@ from .api_routes import (
     cancel_transfer_handler,
     _host_interfaces,
     _expire_stale_jobs,
+    speedtest_down_handler,
+    speedtest_up_handler,
 )
 
 # --- Windows asyncio fix (prevents noisy ConnectionResetError on close, from NER_RMCH) ---
@@ -65,6 +68,10 @@ if platform.system() == "Windows":
             pass
 
     _ProactorBasePipeTransport._call_connection_lost = _silent
+
+
+async def speedtest_page_handler(request: web.Request) -> web.StreamResponse:
+    raise web.HTTPFound("/static/speedtest.html")
 
 
 async def index_handler(request: web.Request) -> web.Response:
@@ -108,9 +115,21 @@ async def _discovery_broadcaster(app):
         sock.close()
 
 
+async def _loop_lag_monitor():
+    loop = asyncio.get_running_loop()
+    while True:
+        before = loop.time()
+        await asyncio.sleep(0.1)
+        lag = loop.time() - before - 0.1
+        if lag > 0.1:
+            print(f"[LAG] event loop blocked for {lag * 1000:.0f} ms")
+
+
 async def _start_discovery(app):
     app["discovery_task"] = asyncio.create_task(_discovery_broadcaster(app))
     app["transfer_cleanup_task"] = asyncio.create_task(_periodic_transfer_cleanup())
+    if os.environ.get("SUPERSHARE_DEBUG_LAG") == "1":
+        app["lag_task"] = asyncio.create_task(_loop_lag_monitor())
 
 
 async def _periodic_transfer_cleanup():
@@ -128,7 +147,7 @@ async def _periodic_transfer_cleanup():
 
 
 async def _stop_discovery(app):
-    for task_name in ("discovery_task", "transfer_cleanup_task"):
+    for task_name in ("discovery_task", "transfer_cleanup_task", "lag_task"):
         task = app.get(task_name)
         if not task:
             continue
@@ -185,7 +204,7 @@ async def api_error_middleware(request: web.Request, handler):
 
 def create_app(port=PORT, tls_info=None) -> web.Application:
     # Streaming is bounded by the request reader and per-chunk file writes.
-    app = web.Application(client_max_size=1024 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536}, middlewares=[api_error_middleware, security_headers_middleware])
+    app = web.Application(client_max_size=1024 * 1024, handler_args={"max_line_size": 65536, "max_field_size": 65536, "read_bufsize": 1024 * 1024}, middlewares=[api_error_middleware, security_headers_middleware])
     app["port"] = port
     app["scheme"] = "https" if tls_info else "http"
     app["tls_info"] = tls_info or {}
@@ -196,12 +215,15 @@ def create_app(port=PORT, tls_info=None) -> web.Application:
     app.router.add_get("/", index_handler)
     for route in ("/send", "/files", "/connect", "/devices", "/activity", "/storage"):
         app.router.add_get(route, index_handler)
+    app.router.add_get("/speedtest", speedtest_page_handler)
 
     # REST & Streaming API
     app.router.add_get("/api/status", status_handler)
     app.router.add_get("/api/network", network_handler)
     app.router.add_get("/api/pairing-qr", pairing_qr_handler)
     app.router.add_get("/api/diagnostics", diagnostics_handler)
+    app.router.add_get("/api/speedtest-down", speedtest_down_handler)
+    app.router.add_post("/api/speedtest-up", speedtest_up_handler)
     app.router.add_get("/api/upload-permission", upload_permission_handler)
     app.router.add_post("/api/pair", pair_device_handler)
     app.router.add_post("/api/devices/confirm-pairing", confirm_pairing_handler)
